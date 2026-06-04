@@ -1,479 +1,526 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
-  ScrollView,
-  Alert,
-  RefreshControl,
+  ActivityIndicator,
+  Platform,
+  PermissionsAndroid,
+  TouchableOpacity,
 } from 'react-native';
 import {
-  getAllRecords,
-  getUnsyncedRecords,
-  getTodayCount,
-  AttendanceRecord,
-} from '../utils/storage';
-import { syncToAWS, isInternetAvailable, autoSyncIfOnline } from '../utils/syncService';
-import { checkTimeWindow, TimeCheckResult, formatShiftTime } from '../utils/timeWindow';
+  Camera,
+  useCameraDevice,
+} from 'react-native-vision-camera';
+import FaceDetection, {
+  Face,
+} from '@react-native-ml-kit/face-detection';
 
-const TRANSLATIONS = {
-  en: {
-    welcome: 'Welcome back',
-    admin: 'Admin Dashboard',
-    todayAttendance: "Today's Attendance",
-    pendingSync: 'Pending Sync',
-    successRate: 'Success Rate',
-    zoneStatus: 'Zone Status',
-    recentActivity: 'Recent Activity',
-    syncBtn: 'Sync Now',
-    newScan: '+ New Face Scan',
-    records: 'records',
-    active: 'Active',
-    syncing: 'Syncing...',
-    synced: 'All Synced!',
-    offlineMode: 'Offline Mode',
-    onlineMode: 'Online Mode',
-    noRecords: 'No attendance records yet',
-    syncSuccess: 'Sync Complete',
-    syncFailed: 'Sync Failed',
-    liveness: 'Liveness',
-    shiftActive: 'Shift Active',
-    outsideShift: 'Outside Shift Hours',
-    nextShift: 'Next',
-    noMoreShifts: 'No more shifts today',
-  },
-  hi: {
-    welcome: 'वापस स्वागत है',
-    admin: 'एडमिन डैशबोर्ड',
-    todayAttendance: 'आज की उपस्थिति',
-    pendingSync: 'लंबित सिंक',
-    successRate: 'सफलता दर',
-    zoneStatus: 'क्षेत्र स्थिति',
-    recentActivity: 'हालिया गतिविधि',
-    syncBtn: 'अभी सिंक करें',
-    newScan: '+ नया फेस स्कैन',
-    records: 'रिकॉर्ड',
-    active: 'सक्रिय',
-    syncing: 'सिंक हो रहा है...',
-    synced: 'सब सिंक हो गया!',
-    offlineMode: 'ऑफलाइन मोड',
-    onlineMode: 'ऑनलाइन मोड',
-    noRecords: 'अभी कोई रिकॉर्ड नहीं',
-    syncSuccess: 'सिंक पूर्ण',
-    syncFailed: 'सिंक विफल',
-    liveness: 'जीवंतता',
-    shiftActive: 'शिफ्ट सक्रिय',
-    outsideShift: 'शिफ्ट समय के बाहर',
-    nextShift: 'अगली',
-    noMoreShifts: 'आज कोई शिफ्ट नहीं',
-  },
+interface FaceFrameProps {
+  onLivenessComplete: (score: number, photoPath: string) => void;
+  onError: (error: string) => void;
+  currentStep: number;
+  lang: 'en' | 'hi';
+}
+
+const STEP_LABELS = {
+  en: ['Blink your eyes', 'Smile please', 'Turn head slightly'],
+  hi: ['आंखें झपकाएं', 'मुस्कुराएं', 'सिर थोड़ा घुमाएं'],
 };
 
-export default function DashboardScreen({ navigation, route }: any) {
-  const lang = route?.params?.lang || 'en';
-  const t = TRANSLATIONS[lang];
+const STEP_ICONS = ['👁️', '😊', '↔️'];
 
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
-  const [todayCount, setTodayCount] = useState(0);
-  const [pendingCount, setPendingCount] = useState(0);
-  const [isOnline, setIsOnline] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced'>('idle');
-  const [refreshing, setRefreshing] = useState(false);
-  const [timeCheck, setTimeCheck] = useState<TimeCheckResult | null>(null);
+// ─── Thresholds ───
+const BLINK_THRESHOLD = 0.3;    // eye open probability < 0.3 = blink
+const SMILE_THRESHOLD = 0.7;    // smile probability > 0.7 = smile
+const HEAD_TURN_THRESHOLD = 5;  // relative angle difference > 5° = turn (was 8, now 5)
 
-  // ─── Load Data ───
-  const loadData = useCallback(async () => {
-    try {
-      const [allRecords, unsynced, todayTotal, online] = await Promise.all([
-        getAllRecords(),
-        getUnsyncedRecords(),
-        getTodayCount(),
-        isInternetAvailable(),
-      ]);
-      setRecords(allRecords);
-      setPendingCount(unsynced.length);
-      setTodayCount(todayTotal);
-      setIsOnline(online);
-    } catch (e) {
-      console.log('Load error:', e);
-    }
-  }, []);
+export default function FaceFrame({
+  onLivenessComplete,
+  onError,
+  currentStep,
+  lang,
+}: FaceFrameProps) {
+  const device = useCameraDevice('front');
+  const camera = useRef<Camera>(null);
+
+  const [hasPermission, setHasPermission] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState('');
+  const [faceVisible, setFaceVisible] = useState(false);
+  const [confidence, setConfidence] = useState(0);
+  const [livenessScore, setLivenessScore] = useState(0);
+
+  // ─── Base angle for head turn comparison ───
+  const [baseAngle, setBaseAngle] = useState<number | null>(null);
+  const [waitingForTurn, setWaitingForTurn] = useState(false);
+
+  // ─── FIX: useRef to track current eulerY in real-time (no snapshot needed) ───
+  const currentEulerY = useRef<number>(0);
 
   useEffect(() => {
-    loadData();
-    autoSyncIfOnline();
-    setTimeCheck(checkTimeWindow());
-    // Refresh time check every 30 seconds
-    const interval = setInterval(() => {
-      setTimeCheck(checkTimeWindow());
-    }, 30000);
-    return () => clearInterval(interval);
+    requestCameraPermission();
   }, []);
 
-  // ─── Pull to Refresh ───
-  async function onRefresh() {
-    setRefreshing(true);
-    await loadData();
-    setTimeCheck(checkTimeWindow());
-    setRefreshing(false);
-  }
+  // Reset all state when step changes
+  useEffect(() => {
+    setStatusMsg('');
+    setFaceVisible(false);
+    setConfidence(0);
+    setLivenessScore(0);
+    setDetecting(false);
+    setBaseAngle(null);
+    setWaitingForTurn(false);
+    currentEulerY.current = 0; // reset ref on step change
+  }, [currentStep]);
 
-  // ─── Sync to AWS ───
-  async function handleSync() {
-    if (pendingCount === 0) return;
-    setSyncStatus('syncing');
+  // ─── FIX: Continuously track eulerY in background for step 2 ───
+  useEffect(() => {
+    if (currentStep !== 2 || !isReady) return;
+
+    let active = true;
+
+    const interval = setInterval(async () => {
+      if (!active || detecting) return;
+      try {
+        const photoPath = await capturePhoto();
+        if (!photoPath) return;
+        const faces = await FaceDetection.detect(`file://${photoPath}`, {
+          performanceMode: 'fast',
+          landmarkMode: 'none',
+          classificationMode: 'none',
+          trackingEnabled: true,
+        });
+        if (faces && faces.length > 0) {
+          currentEulerY.current = faces[0].headEulerAngleY ?? 0;
+        }
+      } catch {}
+    }, 800);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [currentStep, isReady]);
+
+  async function requestCameraPermission() {
     try {
-      const result = await syncToAWS();
-      setSyncStatus(result.success ? 'synced' : 'idle');
-      await loadData();
-      Alert.alert(
-        result.success ? t.syncSuccess : t.syncFailed,
-        result.message,
-      );
+      if (Platform.OS === 'android') {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.CAMERA,
+          {
+            title: 'DRISHTI Camera Permission',
+            message: 'DRISHTI needs camera for face authentication.',
+            buttonPositive: 'Allow',
+            buttonNegative: 'Deny',
+          },
+        );
+        setHasPermission(granted === PermissionsAndroid.RESULTS.GRANTED);
+      } else {
+        const status = await Camera.requestCameraPermission();
+        setHasPermission(status === 'granted');
+      }
     } catch {
-      setSyncStatus('idle');
-      Alert.alert(
-        t.syncFailed,
-        lang === 'en' ? 'Please try again.' : 'पुनः प्रयास करें।',
-      );
+      onError('Camera permission denied');
     }
   }
 
-  function formatTime(iso: string) {
+  async function capturePhoto(): Promise<string> {
+    if (!camera.current) return '';
     try {
-      return new Date(iso).toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
+      const photo = await camera.current.takePhoto({
+        qualityPrioritization: 'speed',
+        flash: 'off',
       });
-    } catch {
-      return iso;
-    }
-  }
-
-  function formatDate(iso: string) {
-    try {
-      return new Date(iso).toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-      });
+      return photo.path;
     } catch {
       return '';
     }
   }
 
-  const successRate =
-    records.length > 0
-      ? ((records.length / (records.length + 1)) * 100).toFixed(1)
-      : '0.0';
+  // ─── Real ML Kit Face Analysis ───
+  async function runLivenessCheck() {
+    if (detecting || !isReady) return;
+    setDetecting(true);
+    setStatusMsg(lang === 'en' ? 'Capturing...' : 'कैप्चर हो रहा है...');
+
+    try {
+      // Step 2 uses real-time tracked angle — no new snapshot needed for comparison
+      if (currentStep === 2) {
+        const eulerY = currentEulerY.current;
+
+        if (baseAngle === null) {
+          // ── Phase 1: Save base angle from real-time ref ──
+          setBaseAngle(eulerY);
+          setWaitingForTurn(true);
+          setStatusMsg(
+            lang === 'en'
+              ? '✓ Base captured! Now turn your head LEFT or RIGHT, then press again'
+              : '✓ Base capture! अब सिर बाएं या दाएं घुमाएं, फिर दबाएं',
+          );
+          setDetecting(false);
+          return;
+        } else {
+          // ── Phase 2: Compare real-time angle against base ──
+          const angleDiff = Math.abs(eulerY - baseAngle);
+          const stepPassed = angleDiff > HEAD_TURN_THRESHOLD;
+          const score = Math.min(angleDiff / 20, 1);
+
+          if (!stepPassed) {
+            setStatusMsg(
+              lang === 'en'
+                ? `Keep head turned! (${angleDiff.toFixed(1)}° moved / ${HEAD_TURN_THRESHOLD}° needed)`
+                : `सिर घुमाए रखें! (${angleDiff.toFixed(1)}° घुमा / ${HEAD_TURN_THRESHOLD}° चाहिए)`,
+            );
+            setDetecting(false);
+            return;
+          }
+
+          // ── Step 2 passed — capture photo for record ──
+          const photoPath = await capturePhoto();
+          setLivenessScore(score);
+          setConfidence(0.9);
+          setFaceVisible(true);
+          setStatusMsg(
+            lang === 'en'
+              ? `✓ Step verified! Score: ${(score * 100).toFixed(1)}%`
+              : `✓ चरण सत्यापित! स्कोर: ${(score * 100).toFixed(1)}%`,
+          );
+          await new Promise(res => setTimeout(res, 600));
+          onLivenessComplete(score, photoPath);
+          return;
+        }
+      }
+
+      // ─── Steps 0 & 1: Original snapshot-based logic ───
+      const photoPath = await capturePhoto();
+      if (!photoPath) {
+        setStatusMsg(lang === 'en' ? 'Capture failed!' : 'कैप्चर विफल!');
+        setDetecting(false);
+        return;
+      }
+
+      setStatusMsg(lang === 'en' ? 'Analyzing face...' : 'चेहरा विश्लेषण...');
+
+      const faces = await FaceDetection.detect(`file://${photoPath}`, {
+        performanceMode: 'accurate',
+        landmarkMode: 'all',
+        classificationMode: 'all',
+        trackingEnabled: true,
+      });
+
+      if (!faces || faces.length === 0) {
+        setStatusMsg(
+          lang === 'en'
+            ? 'No face detected! Come closer.'
+            : 'चेहरा नहीं मिला! पास आएं।',
+        );
+        setDetecting(false);
+        return;
+      }
+
+      const face: Face = faces[0];
+      setFaceVisible(true);
+
+      let stepPassed = false;
+      let score = 0;
+
+      // ─── Step 0: Blink Detection ───
+      if (currentStep === 0) {
+        const leftEye = face.leftEyeOpenProbability ?? 1;
+        const rightEye = face.rightEyeOpenProbability ?? 1;
+        const avgEye = (leftEye + rightEye) / 2;
+        stepPassed = avgEye < BLINK_THRESHOLD;
+        score = 1 - avgEye;
+
+        if (!stepPassed) {
+          setStatusMsg(
+            lang === 'en'
+              ? `Please BLINK! Eye open: ${(avgEye * 100).toFixed(0)}%`
+              : `आंखें झपकाएं! आंख खुली: ${(avgEye * 100).toFixed(0)}%`,
+          );
+        }
+
+      // ─── Step 1: Smile Detection ───
+      } else if (currentStep === 1) {
+        const smileProb = face.smilingProbability ?? 0;
+        stepPassed = smileProb > SMILE_THRESHOLD;
+        score = smileProb;
+
+        if (!stepPassed) {
+          setStatusMsg(
+            lang === 'en'
+              ? `Please SMILE! Smile: ${(smileProb * 100).toFixed(0)}%`
+              : `मुस्कुराएं! मुस्कान: ${(smileProb * 100).toFixed(0)}%`,
+          );
+        }
+      }
+
+      setLivenessScore(score);
+      setConfidence(face.trackingId ? 0.95 : 0.85);
+
+      if (!stepPassed) {
+        setDetecting(false);
+        return;
+      }
+
+      // ─── Step passed! ───
+      setStatusMsg(
+        lang === 'en'
+          ? `✓ Step verified! Score: ${(score * 100).toFixed(1)}%`
+          : `✓ चरण सत्यापित! स्कोर: ${(score * 100).toFixed(1)}%`,
+      );
+
+      await new Promise(res => setTimeout(res, 600));
+      onLivenessComplete(score, photoPath);
+
+    } catch (err) {
+      console.log('ML Kit error:', err);
+      onError('Face analysis failed. Please try again.');
+    } finally {
+      setDetecting(false);
+    }
+  }
+
+  // ─── Dynamic button label for head turn step ───
+  function getButtonLabel(): string {
+    if (!isReady) {
+      return lang === 'en' ? 'Starting camera...' : 'कैमरा शुरू हो रहा है...';
+    }
+    if (currentStep === 2 && waitingForTurn) {
+      return lang === 'en'
+        ? '↔️ I have turned my head'
+        : '↔️ मैंने सिर घुमा लिया';
+    }
+    return `${STEP_ICONS[currentStep]} ${STEP_LABELS[lang][currentStep]}`;
+  }
+
+  if (!device) {
+    return (
+      <View style={styles.errorBox}>
+        <Text style={styles.errorIcon}>📷</Text>
+        <Text style={styles.errorText}>
+          {lang === 'en' ? 'No front camera found' : 'फ्रंट कैमरा नहीं मिला'}
+        </Text>
+      </View>
+    );
+  }
+
+  if (!hasPermission) {
+    return (
+      <View style={styles.errorBox}>
+        <Text style={styles.errorIcon}>🔒</Text>
+        <Text style={styles.errorText}>
+          {lang === 'en' ? 'Camera permission required' : 'कैमरा अनुमति आवश्यक है'}
+        </Text>
+        <TouchableOpacity style={styles.permBtn} onPress={requestCameraPermission}>
+          <Text style={styles.permBtnText}>
+            {lang === 'en' ? 'Grant Permission' : 'अनुमति दें'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.wrapper}>
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.welcomeText}>{t.welcome}</Text>
-          <Text style={styles.adminText}>{t.admin}</Text>
-        </View>
-        <View style={[
-          styles.modeBadge,
-          isOnline ? styles.modeBadgeOnline : styles.modeBadgeOffline,
-        ]}>
+      {/* Camera */}
+      <View style={styles.cameraContainer}>
+        <Camera
+          ref={camera}
+          style={styles.camera}
+          device={device}
+          isActive={true}
+          photo={true}
+          onInitialized={() => setIsReady(true)}
+          onError={e => onError(e.message)}
+        />
+
+        {/* Overlay */}
+        <View style={styles.overlay}>
           <View style={[
-            styles.modeDot,
-            isOnline ? styles.dotOnline : styles.dotOffline,
+            styles.faceOval,
+            faceVisible ? styles.faceOvalDetected : styles.faceOvalDefault,
           ]} />
-          <Text style={styles.modeText}>
-            {isOnline ? t.onlineMode : t.offlineMode}
-          </Text>
+          <View style={[styles.corner, styles.topLeft]} />
+          <View style={[styles.corner, styles.topRight]} />
+          <View style={[styles.corner, styles.bottomLeft]} />
+          <View style={[styles.corner, styles.bottomRight]} />
+          <View style={styles.stepIconBox}>
+            <Text style={styles.stepIconText}>{STEP_ICONS[currentStep]}</Text>
+          </View>
         </View>
       </View>
 
-      <ScrollView
-        style={styles.scroll}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }>
-
-        {/* Time Window Status */}
-        {timeCheck && (
-          <View style={[
-            styles.timeCard,
-            timeCheck.allowed ? styles.timeCardGreen : styles.timeCardRed,
+      {/* Status */}
+      {statusMsg !== '' && (
+        <View style={[
+          styles.statusBox,
+          statusMsg.includes('✓') ? styles.statusSuccess : styles.statusNormal,
+        ]}>
+          <Text style={[
+            styles.statusText,
+            statusMsg.includes('✓') ? styles.statusTextSuccess : styles.statusTextNormal,
           ]}>
-            <Text style={styles.timeIcon}>🕐</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={[
-                styles.timeTitle,
-                { color: timeCheck.allowed ? '#1a7a4a' : '#a32d2d' },
-              ]}>
-                {timeCheck.allowed ? t.shiftActive : t.outsideShift}
-              </Text>
-              <Text style={styles.timeSub}>
-                {timeCheck.allowed && timeCheck.currentShift
-                  ? `${lang === 'en' ? timeCheck.currentShift.name : timeCheck.currentShift.nameHi} • ${formatShiftTime(timeCheck.currentShift.startHour, timeCheck.currentShift.startMinute)} - ${formatShiftTime(timeCheck.currentShift.endHour, timeCheck.currentShift.endMinute)}`
-                  : timeCheck.nextShift
-                  ? `${t.nextShift}: ${lang === 'en' ? timeCheck.nextShift.name : timeCheck.nextShift.nameHi}`
-                  : t.noMoreShifts}
-              </Text>
-            </View>
-          </View>
-        )}
-
-        {/* Stat Cards */}
-        <View style={styles.statsGrid}>
-          <StatCard
-            label={t.todayAttendance}
-            value={String(todayCount)}
-            color="#1A3C6E"
-            icon="👥"
-          />
-          <StatCard
-            label={t.pendingSync}
-            value={String(pendingCount)}
-            color={pendingCount > 0 ? '#FF6B00' : '#2ECC71'}
-            icon="🔄"
-          />
-          <StatCard
-            label={t.successRate}
-            value={`${successRate}%`}
-            color="#2ECC71"
-            icon="✅"
-          />
-          <StatCard
-            label={t.zoneStatus}
-            value={t.active}
-            color="#1A3C6E"
-            icon="📍"
-          />
-        </View>
-
-        {/* Sync Button */}
-        <TouchableOpacity
-          style={[
-            styles.syncBtn,
-            syncStatus === 'synced' && styles.syncBtnDone,
-            (pendingCount === 0 || syncStatus === 'syncing') && styles.syncBtnDisabled,
-          ]}
-          onPress={handleSync}
-          disabled={syncStatus === 'syncing' || pendingCount === 0}>
-          <Text style={styles.syncBtnText}>
-            {syncStatus === 'syncing'
-              ? t.syncing
-              : syncStatus === 'synced'
-              ? t.synced
-              : `${t.syncBtn} (${pendingCount} ${t.records})`}
+            {statusMsg}
           </Text>
-        </TouchableOpacity>
-
-        {/* Recent Activity */}
-        <View style={styles.activityCard}>
-          <Text style={styles.activityTitle}>{t.recentActivity}</Text>
-          {records.length === 0 ? (
-            <View style={styles.emptyBox}>
-              <Text style={styles.emptyIcon}>📋</Text>
-              <Text style={styles.emptyText}>{t.noRecords}</Text>
-            </View>
-          ) : (
-            records.map((item, i) => (
-              <View key={item.id ?? i}>
-                <View style={styles.activityRow}>
-                  <View style={styles.avatarCircle}>
-                    <Text style={styles.avatarText}>
-                      {item.empName?.charAt(0) ?? '?'}
-                    </Text>
-                  </View>
-                  <View style={styles.activityInfo}>
-                    <Text style={styles.activityName}>{item.empName}</Text>
-                    <Text style={styles.activityEmpId}>
-                      {item.empId} • {item.locationZone}
-                    </Text>
-                    <Text style={styles.activityLiveness}>
-                      {t.liveness}: {(item.livenessScore * 100).toFixed(1)}%
-                    </Text>
-                  </View>
-                  <View style={styles.activityRight}>
-                    <Text style={styles.activityTime}>
-                      {formatTime(item.timestamp)}
-                    </Text>
-                    <Text style={styles.activityDate}>
-                      {formatDate(item.timestamp)}
-                    </Text>
-                    <View style={[
-                      styles.syncBadge,
-                      item.synced === 1 ? styles.syncBadgeDone : styles.syncBadgePending,
-                    ]}>
-                      <Text style={[
-                        styles.syncBadgeText,
-                        item.synced === 1 ? styles.syncTextDone : styles.syncTextPending,
-                      ]}>
-                        {item.synced === 1
-                          ? (lang === 'en' ? '✓ Synced' : '✓ सिंक')
-                          : (lang === 'en' ? '⏳ Pending' : '⏳ बाकी')}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-                {i < records.length - 1 && <View style={styles.divider} />}
-              </View>
-            ))
-          )}
         </View>
+      )}
 
-        {/* New Scan Button */}
-        <TouchableOpacity
-          style={styles.newScanBtn}
-          onPress={() => navigation.navigate('FaceScan', { lang })}>
-          <Text style={styles.newScanText}>{t.newScan}</Text>
-        </TouchableOpacity>
+      {/* Info Row */}
+      {faceVisible && (
+        <View style={styles.infoRow}>
+          <View style={styles.infoChip}>
+            <Text style={styles.infoLabel}>
+              {lang === 'en' ? 'Face' : 'चेहरा'}
+            </Text>
+            <Text style={[styles.infoValue, { color: '#2ECC71' }]}>
+              {lang === 'en' ? 'Detected' : 'मिला'}
+            </Text>
+          </View>
+          <View style={styles.infoChip}>
+            <Text style={styles.infoLabel}>
+              {lang === 'en' ? 'Liveness' : 'जीवंतता'}
+            </Text>
+            <Text style={[styles.infoValue, { color: '#1A3C6E' }]}>
+              {(livenessScore * 100).toFixed(1)}%
+            </Text>
+          </View>
+          <View style={styles.infoChip}>
+            <Text style={styles.infoLabel}>
+              {lang === 'en' ? 'Confidence' : 'विश्वास'}
+            </Text>
+            <Text style={[styles.infoValue, { color: '#FF6B00' }]}>
+              {(confidence * 100).toFixed(0)}%
+            </Text>
+          </View>
+        </View>
+      )}
 
-        <View style={{ height: 30 }} />
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
+      {/* Verify Button */}
+      <TouchableOpacity
+        style={[
+          styles.verifyBtn,
+          (!isReady || detecting) && styles.verifyBtnDisabled,
+        ]}
+        onPress={runLivenessCheck}
+        disabled={!isReady || detecting}>
+        {detecting ? (
+          <View style={styles.detectingRow}>
+            <ActivityIndicator color="#fff" size="small" />
+            <Text style={styles.verifyBtnText}>
+              {lang === 'en' ? 'Analyzing...' : 'विश्लेषण हो रहा है...'}
+            </Text>
+          </View>
+        ) : (
+          <Text style={styles.verifyBtnText}>{getButtonLabel()}</Text>
+        )}
+      </TouchableOpacity>
 
-function StatCard({ label, value, color, icon }: any) {
-  return (
-    <View style={styles.statCard}>
-      <Text style={styles.statIcon}>{icon}</Text>
-      <Text style={[styles.statValue, { color }]}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F6FA' },
-  header: {
-    backgroundColor: '#1A3C6E',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+  wrapper: { gap: 12, alignItems: 'center' },
+  cameraContainer: {
+    width: 260,
+    height: 310,
+    borderRadius: 130,
+    overflow: 'hidden',
+    position: 'relative',
+    alignSelf: 'center',
+    backgroundColor: '#000',
   },
-  welcomeText: { color: 'rgba(255,255,255,0.6)', fontSize: 11 },
-  adminText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  modeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
-  },
-  modeBadgeOnline: { backgroundColor: 'rgba(46,204,113,0.2)' },
-  modeBadgeOffline: { backgroundColor: 'rgba(255,255,255,0.15)' },
-  modeDot: { width: 7, height: 7, borderRadius: 4 },
-  dotOnline: { backgroundColor: '#2ECC71' },
-  dotOffline: { backgroundColor: '#FF6B00' },
-  modeText: { color: '#fff', fontSize: 11 },
-  scroll: { flex: 1, padding: 16 },
-  timeCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  timeCardGreen: { backgroundColor: '#E8F8F0' },
-  timeCardRed: { backgroundColor: '#FFF0F0' },
-  timeIcon: { fontSize: 20 },
-  timeTitle: { fontSize: 13, fontWeight: '600' },
-  timeSub: { fontSize: 11, color: '#666', marginTop: 2 },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 16,
-  },
-  statCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
-    alignItems: 'center',
-    width: '47%',
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
-    gap: 4,
-  },
-  statIcon: { fontSize: 22 },
-  statValue: { fontSize: 22, fontWeight: '700' },
-  statLabel: { fontSize: 11, color: '#888', textAlign: 'center' },
-  syncBtn: {
-    backgroundColor: '#FF6B00',
-    borderRadius: 14,
-    paddingVertical: 15,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  syncBtnDone: { backgroundColor: '#2ECC71' },
-  syncBtnDisabled: { backgroundColor: '#CCCCCC' },
-  syncBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  activityCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
-  },
-  activityTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1A3C6E',
-    marginBottom: 12,
-  },
-  emptyBox: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    gap: 8,
-  },
-  emptyIcon: { fontSize: 32 },
-  emptyText: { color: '#AAAAAA', fontSize: 13 },
-  activityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    gap: 10,
-  },
-  avatarCircle: {
-    width: 38,
-    height: 38,
-    backgroundColor: '#E8EDF5',
-    borderRadius: 19,
+  camera: { width: '100%', height: '100%' },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { color: '#1A3C6E', fontWeight: '600', fontSize: 15 },
-  activityInfo: { flex: 1 },
-  activityName: { fontSize: 13, fontWeight: '500', color: '#1C1C1E' },
-  activityEmpId: { fontSize: 11, color: '#888', marginTop: 1 },
-  activityLiveness: { fontSize: 10, color: '#2ECC71', marginTop: 2 },
-  activityRight: { alignItems: 'flex-end', gap: 3 },
-  activityTime: { fontSize: 12, fontWeight: '500', color: '#1C1C1E' },
-  activityDate: { fontSize: 10, color: '#888' },
-  syncBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 8,
+  faceOval: {
+    width: 180,
+    height: 230,
+    borderRadius: 100,
+    borderWidth: 2,
+    borderStyle: 'dashed',
   },
-  syncBadgeDone: { backgroundColor: '#E8F8F0' },
-  syncBadgePending: { backgroundColor: '#FFF8F0' },
-  syncBadgeText: { fontSize: 10, fontWeight: '600' },
-  syncTextDone: { color: '#2ECC71' },
-  syncTextPending: { color: '#FF6B00' },
-  divider: { height: 0.5, backgroundColor: '#F0F0F0' },
-  newScanBtn: {
-    backgroundColor: '#1A3C6E',
-    borderRadius: 14,
-    paddingVertical: 15,
+  faceOvalDefault: { borderColor: 'rgba(255,255,255,0.6)' },
+  faceOvalDetected: { borderColor: '#2ECC71', borderStyle: 'solid' },
+  corner: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderColor: '#FF6B00',
+    borderWidth: 3,
+  },
+  topLeft: { top: 20, left: 20, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 4 },
+  topRight: { top: 20, right: 20, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 4 },
+  bottomLeft: { bottom: 20, left: 20, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 4 },
+  bottomRight: { bottom: 20, right: 20, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 4 },
+  stepIconBox: {
+    position: 'absolute',
+    bottom: 30,
+    backgroundColor: 'rgba(26,60,110,0.85)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  stepIconText: { fontSize: 22 },
+  statusBox: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    width: '100%',
     alignItems: 'center',
   },
-  newScanText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  statusNormal: { backgroundColor: 'rgba(26,60,110,0.1)' },
+  statusSuccess: { backgroundColor: '#E8F8F0' },
+  statusText: { fontSize: 13, fontWeight: '500', textAlign: 'center' },
+  statusTextNormal: { color: '#1A3C6E' },
+  statusTextSuccess: { color: '#2ECC71' },
+  infoRow: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
+  infoChip: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    alignItems: 'center',
+    borderWidth: 0.5,
+    borderColor: '#E0E0E0',
+    minWidth: 75,
+  },
+  infoLabel: { fontSize: 9, color: '#888' },
+  infoValue: { fontSize: 13, fontWeight: '600', marginTop: 1 },
+  verifyBtn: {
+    backgroundColor: '#1A3C6E',
+    borderRadius: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+    width: '100%',
+  },
+  verifyBtnDisabled: { backgroundColor: '#AAAAAA' },
+  verifyBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  detectingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  errorBox: {
+    width: 260,
+    height: 310,
+    borderRadius: 130,
+    backgroundColor: '#FFF0F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    borderWidth: 2,
+    borderColor: '#E24B4A',
+    borderStyle: 'dashed',
+    gap: 12,
+    padding: 32,
+  },
+  errorIcon: { fontSize: 40 },
+  errorText: { color: '#E24B4A', fontSize: 13, fontWeight: '500', textAlign: 'center' },
+  permBtn: { backgroundColor: '#1A3C6E', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20 },
+  permBtnText: { color: '#fff', fontSize: 13, fontWeight: '500' },
 });

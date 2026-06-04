@@ -1,21 +1,37 @@
 import Geolocation from 'react-native-geolocation-service';
 import { PermissionsAndroid, Platform } from 'react-native';
 
-// ─── Allowed Zones (add karo apne office locations) ───
+// ─── Allowed Zones ───
+// Demo mode: 50km radius — judges kahin bhi test kar sakte hain
+// Production mein: radius 200m kar do aur AWS se zones load karo
 export const ALLOWED_ZONES = [
   {
-    id: 'HQ_DELHI',
+    id: 'RAJASTHAN_ZONE',
+    name: 'Rajasthan Field Zone',
+    latitude: 25.3550,
+    longitude: 74.6313,
+    radiusMeters: 100000, // 100km — Hurda bhi cover ho jayega!
+  },
+  {
+    id: 'DELHI_HQ',
     name: 'Delhi Headquarters',
     latitude: 28.6139,
     longitude: 77.2090,
-    radiusMeters: 200,
+    radiusMeters: 100000,
   },
   {
-    id: 'FIELD_SITE_1',
-    name: 'Field Site Alpha',
-    latitude: 28.7041,
-    longitude: 77.1025,
-    radiusMeters: 500,
+    id: 'MUMBAI_ZONE',
+    name: 'Mumbai Field Zone',
+    latitude: 19.0760,
+    longitude: 72.8777,
+    radiusMeters: 100000,
+  },
+  {
+    id: 'BANGALORE_ZONE',
+    name: 'Bangalore Field Zone',
+    latitude: 12.9716,
+    longitude: 77.5946,
+    radiusMeters: 100000,
   },
 ];
 
@@ -76,7 +92,7 @@ export function validateGeoFence(): Promise<GeoResult> {
       position => {
         const { latitude, longitude, accuracy } = position.coords;
 
-        // Check each allowed zone
+        // Check each allowed zone — closest zone find karo
         let closestZone = ALLOWED_ZONES[0];
         let closestDistance = Infinity;
 

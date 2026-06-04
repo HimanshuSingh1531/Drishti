@@ -15,8 +15,8 @@ import {
   getTodayCount,
   AttendanceRecord,
 } from '../utils/storage';
-import { syncToAWS, isInternetAvailable } from '../utils/syncService';
-import { autoSyncIfOnline } from '../utils/syncService';
+import { syncToAWS, isInternetAvailable, autoSyncIfOnline } from '../utils/syncService';
+import { checkTimeWindow, TimeCheckResult, formatShiftTime } from '../utils/timeWindow';
 
 const TRANSLATIONS = {
   en: {
@@ -36,12 +36,13 @@ const TRANSLATIONS = {
     offlineMode: 'Offline Mode',
     onlineMode: 'Online Mode',
     noRecords: 'No attendance records yet',
-    pullRefresh: 'Pull to refresh',
     syncSuccess: 'Sync Complete',
     syncFailed: 'Sync Failed',
-    empId: 'ID',
-    zone: 'Zone',
     liveness: 'Liveness',
+    shiftActive: 'Shift Active',
+    outsideShift: 'Outside Shift Hours',
+    nextShift: 'Next',
+    noMoreShifts: 'No more shifts today',
   },
   hi: {
     welcome: 'वापस स्वागत है',
@@ -60,12 +61,13 @@ const TRANSLATIONS = {
     offlineMode: 'ऑफलाइन मोड',
     onlineMode: 'ऑनलाइन मोड',
     noRecords: 'अभी कोई रिकॉर्ड नहीं',
-    pullRefresh: 'रिफ्रेश करें',
     syncSuccess: 'सिंक पूर्ण',
     syncFailed: 'सिंक विफल',
-    empId: 'आईडी',
-    zone: 'क्षेत्र',
     liveness: 'जीवंतता',
+    shiftActive: 'शिफ्ट सक्रिय',
+    outsideShift: 'शिफ्ट समय के बाहर',
+    nextShift: 'अगली',
+    noMoreShifts: 'आज कोई शिफ्ट नहीं',
   },
 };
 
@@ -79,8 +81,8 @@ export default function DashboardScreen({ navigation, route }: any) {
   const [isOnline, setIsOnline] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced'>('idle');
   const [refreshing, setRefreshing] = useState(false);
+  const [timeCheck, setTimeCheck] = useState<TimeCheckResult | null>(null);
 
-  // ─── Load Data from SQLite ───
   const loadData = useCallback(async () => {
     try {
       const [allRecords, unsynced, todayTotal, online] = await Promise.all([
@@ -101,16 +103,20 @@ export default function DashboardScreen({ navigation, route }: any) {
   useEffect(() => {
     loadData();
     autoSyncIfOnline();
+    setTimeCheck(checkTimeWindow());
+    const interval = setInterval(() => {
+      setTimeCheck(checkTimeWindow());
+    }, 30000);
+    return () => clearInterval(interval);
   }, []);
 
-  // ─── Pull to Refresh ───
   async function onRefresh() {
     setRefreshing(true);
     await loadData();
+    setTimeCheck(checkTimeWindow());
     setRefreshing(false);
   }
 
-  // ─── Sync to AWS ───
   async function handleSync() {
     if (pendingCount === 0) return;
     setSyncStatus('syncing');
@@ -124,20 +130,20 @@ export default function DashboardScreen({ navigation, route }: any) {
       );
     } catch {
       setSyncStatus('idle');
-      Alert.alert(t.syncFailed, lang === 'en' ? 'Please try again.' : 'पुनः प्रयास करें।');
+      Alert.alert(
+        t.syncFailed,
+        lang === 'en' ? 'Please try again.' : 'पुनः प्रयास करें।',
+      );
     }
   }
 
-  // ─── Format timestamp ───
   function formatTime(iso: string) {
     try {
       return new Date(iso).toLocaleTimeString('en-IN', {
         hour: '2-digit',
         minute: '2-digit',
       });
-    } catch {
-      return iso;
-    }
+    } catch { return iso; }
   }
 
   function formatDate(iso: string) {
@@ -146,9 +152,7 @@ export default function DashboardScreen({ navigation, route }: any) {
         day: '2-digit',
         month: 'short',
       });
-    } catch {
-      return '';
-    }
+    } catch { return ''; }
   }
 
   const successRate =
@@ -186,7 +190,42 @@ export default function DashboardScreen({ navigation, route }: any) {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }>
 
-        {/* Stat Cards — Real Data */}
+        {/* Time Window Status */}
+        {timeCheck && (
+          <View style={[
+            styles.timeCard,
+            timeCheck.allowed ? styles.timeCardGreen : styles.timeCardRed,
+          ]}>
+            <Text style={styles.timeIcon}>🕐</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={[
+                styles.timeTitle,
+                { color: timeCheck.allowed ? '#1a7a4a' : '#a32d2d' },
+              ]}>
+                {timeCheck.allowed ? t.shiftActive : t.outsideShift}
+              </Text>
+              <Text style={styles.timeSub}>
+                {timeCheck.allowed && timeCheck.currentShift
+                  ? `${lang === 'en'
+                    ? timeCheck.currentShift.name
+                    : timeCheck.currentShift.nameHi} • ${formatShiftTime(
+                      timeCheck.currentShift.startHour,
+                      timeCheck.currentShift.startMinute,
+                    )} - ${formatShiftTime(
+                      timeCheck.currentShift.endHour,
+                      timeCheck.currentShift.endMinute,
+                    )}`
+                  : timeCheck.nextShift
+                  ? `${t.nextShift}: ${lang === 'en'
+                    ? timeCheck.nextShift.name
+                    : timeCheck.nextShift.nameHi}`
+                  : t.noMoreShifts}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Stat Cards */}
         <View style={styles.statsGrid}>
           <StatCard
             label={t.todayAttendance}
@@ -232,10 +271,9 @@ export default function DashboardScreen({ navigation, route }: any) {
           </Text>
         </TouchableOpacity>
 
-        {/* Recent Activity — Real SQLite Records */}
+        {/* Recent Activity */}
         <View style={styles.activityCard}>
           <Text style={styles.activityTitle}>{t.recentActivity}</Text>
-
           {records.length === 0 ? (
             <View style={styles.emptyBox}>
               <Text style={styles.emptyIcon}>📋</Text>
@@ -300,7 +338,6 @@ export default function DashboardScreen({ navigation, route }: any) {
   );
 }
 
-// ─── Stat Card ───
 function StatCard({ label, value, color, icon }: any) {
   return (
     <View style={styles.statCard}>
@@ -338,6 +375,19 @@ const styles = StyleSheet.create({
   dotOffline: { backgroundColor: '#FF6B00' },
   modeText: { color: '#fff', fontSize: 11 },
   scroll: { flex: 1, padding: 16 },
+  timeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  timeCardGreen: { backgroundColor: '#E8F8F0' },
+  timeCardRed: { backgroundColor: '#FFF0F0' },
+  timeIcon: { fontSize: 20 },
+  timeTitle: { fontSize: 13, fontWeight: '600' },
+  timeSub: { fontSize: 11, color: '#666', marginTop: 2 },
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',

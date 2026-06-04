@@ -11,6 +11,7 @@ import {
 import { validateGeoFence, GeoResult } from '../utils/geoFence';
 import { saveAttendance, initDB } from '../utils/storage';
 import { checkTimeWindow, TimeCheckResult, formatShiftTime, formatMinutesLeft } from '../utils/timeWindow';
+import { checkLockStatus, recordFailedAttempt, resetAttempts, LockStatus } from '../utils/appLock';
 import FaceFrame from '../components/FaceFrame';
 
 const TRANSLATIONS = {
@@ -30,6 +31,11 @@ const TRANSLATIONS = {
     nextShift: 'Next Shift in',
     shiftBlocked: 'Outside Shift Hours',
     shiftBlockedMsg: 'Attendance can only be marked during shift hours.',
+    lockedTitle: 'Account Locked!',
+    lockedMsg: 'Too many failed attempts.',
+    minutesLeft: 'minutes remaining',
+    attemptsLeft: 'attempts remaining',
+    failedAttempt: 'Liveness check failed!',
   },
   hi: {
     title: 'चेहरा प्रमाणीकरण',
@@ -47,6 +53,11 @@ const TRANSLATIONS = {
     nextShift: 'अगली शिफ्ट',
     shiftBlocked: 'शिफ्ट समय के बाहर',
     shiftBlockedMsg: 'उपस्थिति केवल शिफ्ट समय में दर्ज की जा सकती है।',
+    lockedTitle: 'खाता लॉक!',
+    lockedMsg: 'बहुत अधिक विफल प्रयास।',
+    minutesLeft: 'मिनट शेष',
+    attemptsLeft: 'प्रयास शेष',
+    failedAttempt: 'जीवंतता जांच विफल!',
   },
 };
 
@@ -56,6 +67,8 @@ const LIVENESS_STEPS = {
 };
 
 export default function FaceScanScreen({ navigation, route }: any) {
+  if (!navigation) return null;
+
   const lang = route?.params?.lang || 'en';
   const empId = route?.params?.empId || 'DL-2024-0042';
   const empName = route?.params?.empName || 'Field Employee';
@@ -67,21 +80,30 @@ export default function FaceScanScreen({ navigation, route }: any) {
   const [geoResult, setGeoResult] = useState<GeoResult | null>(null);
   const [locationStatus, setLocationStatus] = useState<'checking' | 'allowed' | 'denied'>('checking');
   const [timeCheck, setTimeCheck] = useState<TimeCheckResult | null>(null);
+  const [lockStatus, setLockStatus] = useState<LockStatus | null>(null);
   const [currentStep, setCurrentStep] = useState(0);
   const [stepsDone, setStepsDone] = useState([false, false, false]);
   const [livenessScores, setLivenessScores] = useState<number[]>([]);
   const [photoPaths, setPhotoPaths] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [failedSteps, setFailedSteps] = useState(0);
 
   useEffect(() => {
     initDB();
     checkLocation();
     setTimeCheck(checkTimeWindow());
+    checkLock();
     const interval = setInterval(() => {
       setTimeCheck(checkTimeWindow());
+      checkLock();
     }, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  async function checkLock() {
+    const lock = await checkLockStatus();
+    setLockStatus(lock);
+  }
 
   async function checkLocation() {
     setLocationStatus('checking');
@@ -97,8 +119,10 @@ export default function FaceScanScreen({ navigation, route }: any) {
   const canScan =
     locationStatus === 'allowed' &&
     timeCheck?.allowed === true &&
-    !saving;
+    !saving &&
+    lockStatus?.isLocked !== true;
 
+  // ─── Handle liveness step complete ───
   async function handleLivenessComplete(score: number, photoPath: string) {
     const newScores = [...livenessScores, score];
     const newPhotos = [...photoPaths, photoPath];
@@ -108,11 +132,36 @@ export default function FaceScanScreen({ navigation, route }: any) {
     setLivenessScores(newScores);
     setPhotoPaths(newPhotos);
     setStepsDone(newStepsDone);
+    setFailedSteps(0); // Reset failed count on success
 
     if (currentStep < 2) {
       setCurrentStep(currentStep + 1);
     } else {
+      // All steps done — reset attempts and save
+      await resetAttempts();
       await saveRecord(newScores, newPhotos);
+    }
+  }
+
+  // ─── Handle liveness failure ───
+  async function handleLivenessError(error: string) {
+    const newFailed = failedSteps + 1;
+    setFailedSteps(newFailed);
+
+    // Record failed attempt
+    const newLockStatus = await recordFailedAttempt();
+    setLockStatus(newLockStatus);
+
+    if (newLockStatus.isLocked) {
+      Alert.alert(
+        t.lockedTitle,
+        `${t.lockedMsg}\n${newLockStatus.minutesLeft} ${t.minutesLeft}`,
+      );
+    } else {
+      Alert.alert(
+        t.failedAttempt,
+        `${newLockStatus.attemptsLeft} ${t.attemptsLeft}`,
+      );
     }
   }
 
@@ -122,8 +171,8 @@ export default function FaceScanScreen({ navigation, route }: any) {
     try {
       const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
       await saveAttendance({
-        empId: empId,
-        empName: empName,
+        empId,
+        empName,
         timestamp: new Date().toISOString(),
         latitude: geoResult.latitude,
         longitude: geoResult.longitude,
@@ -149,10 +198,6 @@ export default function FaceScanScreen({ navigation, route }: any) {
     } finally {
       setSaving(false);
     }
-  }
-
-  function handleFaceError(error: string) {
-    Alert.alert('Error', error);
   }
 
   const progress = (stepsDone.filter(Boolean).length / 3) * 100;
@@ -184,8 +229,31 @@ export default function FaceScanScreen({ navigation, route }: any) {
           </View>
         </View>
 
+        {/* 🔒 App Lock UI */}
+        {lockStatus?.isLocked && (
+          <View style={styles.lockedBox}>
+            <Text style={styles.lockedIcon}>🔒</Text>
+            <Text style={styles.lockedTitle}>{t.lockedTitle}</Text>
+            <Text style={styles.lockedMsg}>{t.lockedMsg}</Text>
+            <View style={styles.timerBox}>
+              <Text style={styles.timerText}>
+                ⏱️ {lockStatus.minutesLeft} {t.minutesLeft}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {/* Attempts Warning */}
+        {!lockStatus?.isLocked && lockStatus && lockStatus.attemptsLeft < 3 && (
+          <View style={styles.warningBox}>
+            <Text style={styles.warningText}>
+              ⚠️ {lockStatus.attemptsLeft} {t.attemptsLeft}
+            </Text>
+          </View>
+        )}
+
         {/* Time Window Badge */}
-        {timeCheck && (
+        {timeCheck && !lockStatus?.isLocked && (
           <View style={[
             styles.timeBadge,
             timeCheck.allowed ? styles.badgeGreen : styles.badgeRed,
@@ -222,34 +290,36 @@ export default function FaceScanScreen({ navigation, route }: any) {
         )}
 
         {/* Location Badge */}
-        <View style={[
-          styles.locationBadge,
-          locationStatus === 'allowed' ? styles.badgeGreen :
-          locationStatus === 'denied' ? styles.badgeRed :
-          styles.badgeGray,
-        ]}>
-          <Text style={styles.locationIcon}>📍</Text>
-          <Text style={[
-            styles.locationText,
-            locationStatus === 'allowed' ? styles.textGreen :
-            locationStatus === 'denied' ? styles.textRed :
-            styles.textGray,
+        {!lockStatus?.isLocked && (
+          <View style={[
+            styles.locationBadge,
+            locationStatus === 'allowed' ? styles.badgeGreen :
+            locationStatus === 'denied' ? styles.badgeRed :
+            styles.badgeGray,
           ]}>
-            {locationStatus === 'checking'
-              ? t.locationChecking
-              : locationStatus === 'allowed'
-              ? `${t.locationAllowed} • ${geoResult?.distanceMeters}m • ${geoResult?.zoneName}`
-              : t.locationDenied}
-          </Text>
-          {locationStatus === 'denied' && (
-            <TouchableOpacity onPress={checkLocation}>
-              <Text style={styles.retryText}>{t.retryLocation}</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+            <Text style={styles.locationIcon}>📍</Text>
+            <Text style={[
+              styles.locationText,
+              locationStatus === 'allowed' ? styles.textGreen :
+              locationStatus === 'denied' ? styles.textRed :
+              styles.textGray,
+            ]}>
+              {locationStatus === 'checking'
+                ? t.locationChecking
+                : locationStatus === 'allowed'
+                ? `${t.locationAllowed} • ${geoResult?.distanceMeters}m • ${geoResult?.zoneName}`
+                : t.locationDenied}
+            </Text>
+            {locationStatus === 'denied' && (
+              <TouchableOpacity onPress={checkLocation}>
+                <Text style={styles.retryText}>{t.retryLocation}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
 
         {/* GPS Info */}
-        {geoResult && (
+        {geoResult && !lockStatus?.isLocked && (
           <View style={styles.gpsRow}>
             <View style={styles.gpsChip}>
               <Text style={styles.gpsLabel}>{t.accuracy}</Text>
@@ -262,25 +332,11 @@ export default function FaceScanScreen({ navigation, route }: any) {
           </View>
         )}
 
-        {/* Blocked UI */}
-        {!canScan && !saving && (
-          <View style={styles.blockedBox}>
-            <Text style={styles.blockedIcon}>🔒</Text>
-            <Text style={styles.blockedText}>
-              {locationStatus === 'denied'
-                ? t.locationDenied
-                : timeCheck?.allowed === false
-                ? t.shiftBlockedMsg
-                : t.locationChecking}
-            </Text>
-          </View>
-        )}
-
         {/* Camera Face Frame */}
         {canScan && (
           <FaceFrame
             onLivenessComplete={handleLivenessComplete}
-            onError={handleFaceError}
+            onError={handleLivenessError}
             currentStep={currentStep}
             lang={lang}
           />
@@ -294,39 +350,45 @@ export default function FaceScanScreen({ navigation, route }: any) {
         )}
 
         {/* Liveness Steps */}
-        <View style={styles.stepsContainer}>
-          <Text style={styles.stepsTitle}>{t.livenessTitle}</Text>
-          {steps.map((step, i) => (
-            <View key={i} style={styles.stepRow}>
-              <View style={[
-                styles.stepCircle,
-                stepsDone[i] ? styles.stepDone :
-                i === currentStep && canScan ? styles.stepActive :
-                styles.stepPending,
-              ]}>
-                <Text style={styles.stepCircleText}>
-                  {stepsDone[i] ? '✓' : i + 1}
+        {!lockStatus?.isLocked && (
+          <View style={styles.stepsContainer}>
+            <Text style={styles.stepsTitle}>{t.livenessTitle}</Text>
+            {steps.map((step, i) => (
+              <View key={i} style={styles.stepRow}>
+                <View style={[
+                  styles.stepCircle,
+                  stepsDone[i] ? styles.stepDone :
+                  i === currentStep && canScan ? styles.stepActive :
+                  styles.stepPending,
+                ]}>
+                  <Text style={styles.stepCircleText}>
+                    {stepsDone[i] ? '✓' : i + 1}
+                  </Text>
+                </View>
+                <Text style={[
+                  styles.stepText,
+                  stepsDone[i] ? styles.stepTextDone :
+                  i === currentStep ? styles.stepTextActive :
+                  styles.stepTextPending,
+                ]}>
+                  {step}
                 </Text>
               </View>
-              <Text style={[
-                styles.stepText,
-                stepsDone[i] ? styles.stepTextDone :
-                i === currentStep ? styles.stepTextActive :
-                styles.stepTextPending,
-              ]}>
-                {step}
-              </Text>
-            </View>
-          ))}
-        </View>
+            ))}
+          </View>
+        )}
 
         {/* Progress Bar */}
-        <View style={styles.progressBarBg}>
-          <View style={[styles.progressBarFill, { width: `${progress}%` }]} />
-        </View>
-        <Text style={styles.progressText}>
-          {t.stepLabel} {Math.min(currentStep + 1, 3)} {t.of} 3
-        </Text>
+        {!lockStatus?.isLocked && (
+          <>
+            <View style={styles.progressBarBg}>
+              <View style={[styles.progressBarFill, { width: `${progress}%` }]} />
+            </View>
+            <Text style={styles.progressText}>
+              {t.stepLabel} {Math.min(currentStep + 1, 3)} {t.of} 3
+            </Text>
+          </>
+        )}
 
       </ScrollView>
     </SafeAreaView>
@@ -369,6 +431,35 @@ const styles = StyleSheet.create({
   empAvatarText: { color: '#1A3C6E', fontWeight: '700', fontSize: 18 },
   empName: { fontSize: 14, fontWeight: '600', color: '#1C1C1E' },
   empId: { fontSize: 11, color: '#888', marginTop: 2 },
+  lockedBox: {
+    backgroundColor: '#FFF0F0',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: '#E24B4A',
+  },
+  lockedIcon: { fontSize: 48 },
+  lockedTitle: { fontSize: 18, fontWeight: '700', color: '#E24B4A' },
+  lockedMsg: { fontSize: 13, color: '#888', textAlign: 'center' },
+  timerBox: {
+    backgroundColor: '#E24B4A',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginTop: 8,
+  },
+  timerText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  warningBox: {
+    backgroundColor: '#FFF8F0',
+    borderRadius: 10,
+    padding: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FF6B00',
+  },
+  warningText: { color: '#FF6B00', fontSize: 13, fontWeight: '500' },
   timeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -413,23 +504,6 @@ const styles = StyleSheet.create({
   },
   gpsLabel: { fontSize: 10, color: '#888' },
   gpsValue: { fontSize: 14, fontWeight: '600', color: '#1A3C6E' },
-  blockedBox: {
-    backgroundColor: '#FFF0F0',
-    borderRadius: 16,
-    padding: 32,
-    alignItems: 'center',
-    gap: 12,
-    borderWidth: 1,
-    borderColor: '#E24B4A',
-    borderStyle: 'dashed',
-  },
-  blockedIcon: { fontSize: 48 },
-  blockedText: {
-    color: '#E24B4A',
-    fontSize: 14,
-    fontWeight: '500',
-    textAlign: 'center',
-  },
   savingBox: {
     backgroundColor: '#FFF8F0',
     borderRadius: 12,
