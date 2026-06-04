@@ -33,7 +33,7 @@ const STEP_ICONS = ['👁️', '😊', '↔️'];
 // ─── Thresholds ───
 const BLINK_THRESHOLD = 0.3;    // eye open probability < 0.3 = blink
 const SMILE_THRESHOLD = 0.7;    // smile probability > 0.7 = smile
-const HEAD_TURN_THRESHOLD = 5;  // relative angle difference > 5° = turn (was 8, now 5)
+const HEAD_TURN_THRESHOLD = 3; // relative angle difference > 5° = turn (was 8, now 5)
 
 export default function FaceFrame({
   onLivenessComplete,
@@ -58,6 +58,7 @@ export default function FaceFrame({
 
   // ─── FIX: useRef to track current eulerY in real-time (no snapshot needed) ───
   const currentEulerY = useRef<number>(0);
+  const isBaseAngleCaptured = useRef<boolean>(false);
 
   useEffect(() => {
     requestCameraPermission();
@@ -72,7 +73,8 @@ export default function FaceFrame({
     setDetecting(false);
     setBaseAngle(null);
     setWaitingForTurn(false);
-    currentEulerY.current = 0; // reset ref on step change
+    currentEulerY.current = 0;
+    isBaseAngleCaptured.current = false;
   }, [currentStep]);
 
   // ─── FIX: Continuously track eulerY in background for step 2 ───
@@ -80,29 +82,59 @@ export default function FaceFrame({
     if (currentStep !== 2 || !isReady) return;
 
     let active = true;
+    console.log('🔄 Step 2: Starting head angle tracking...');
 
     const interval = setInterval(async () => {
       if (!active || detecting) return;
       try {
         const photoPath = await capturePhoto();
-        if (!photoPath) return;
+        if (!photoPath) {
+          console.log('⚠️  Photo capture failed');
+          return;
+        }
+        
+        // Try with all classification modes to get eulerY
         const faces = await FaceDetection.detect(`file://${photoPath}`, {
           performanceMode: 'fast',
-          landmarkMode: 'none',
-          classificationMode: 'none',
+          landmarkMode: 'all',  // ← Changed from 'none' to 'all'
+          classificationMode: 'all',  // ← Changed from 'none' to 'all'
           trackingEnabled: true,
         });
+        
+        console.log('📸 Raw detection result:', JSON.stringify(faces?.[0], null, 2));
+        
         if (faces && faces.length > 0) {
-          currentEulerY.current = faces[0].headEulerAngleY ?? 0;
+          const face = faces[0];
+
+const newAngle =
+  (face as any).rotationY ??
+  (face as any).rotationZ ??
+  0;
+
+const eulerX = (face as any).rotationX ?? 0;
+const eulerY = (face as any).rotationY ?? 0;
+const eulerZ = (face as any).rotationZ ?? 0;
+          
+          // Use Y-axis (left-right turn), fallback to Z if needed
+          const angleToUse = Math.abs(eulerY) > 0 ? eulerY : eulerZ;
+          
+          currentEulerY.current = angleToUse;
+          console.log('📐 Euler Angles | X:', eulerX.toFixed(1), '° Y:', eulerY.toFixed(1), '° Z:', eulerZ.toFixed(1), '° | Using:', angleToUse.toFixed(1), '°');
+          console.log('📍 Base:', baseAngle, '| Current:', angleToUse.toFixed(1), '| Diff:', Math.abs(angleToUse - (baseAngle ?? 0)).toFixed(1));
+        } else {
+          console.log('❌ No face detected in background tracking');
         }
-      } catch {}
-    }, 800);
+      } catch (err) {
+        console.log('❌ Face detection error:', err);
+      }
+    }, 500); // ← Faster interval (was 800)
 
     return () => {
       active = false;
       clearInterval(interval);
+      console.log('⏹️ Step 2: Stopped head angle tracking');
     };
-  }, [currentStep, isReady]);
+  }, [currentStep, isReady, baseAngle, detecting]);
 
   async function requestCameraPermission() {
     try {
@@ -148,12 +180,50 @@ export default function FaceFrame({
     try {
       // Step 2 uses real-time tracked angle — no new snapshot needed for comparison
       if (currentStep === 2) {
-        const eulerY = currentEulerY.current;
+        // ✅ Get FRESH angle reading when button is pressed
+        const photoPath = await capturePhoto();
+        if (!photoPath) {
+          setStatusMsg(lang === 'en' ? 'Capture failed!' : 'कैप्चर विफल!');
+          setDetecting(false);
+          return;
+        }
 
-        if (baseAngle === null) {
-          // ── Phase 1: Save base angle from real-time ref ──
-          setBaseAngle(eulerY);
+        const faces = await FaceDetection.detect(`file://${photoPath}`, {
+          performanceMode: 'accurate',  // ← More accurate when user presses button
+          landmarkMode: 'all',
+          classificationMode: 'all',
+          trackingEnabled: true,
+        });
+
+        if (!faces || faces.length === 0) {
+          setStatusMsg(
+            lang === 'en'
+              ? 'No face detected! Come closer.'
+              : 'चेहरा नहीं मिला! पास आएं।',
+          );
+          setDetecting(false);
+          return;
+        }
+
+        const face = faces[0];
+const eulerX = (face as any).rotationX ?? 0;
+const eulerY = (face as any).rotationY ?? 0;
+const eulerZ = (face as any).rotationZ ?? 0;
+        
+        // Use Y-axis for left-right turn, fallback to Z
+        const currentAngle = Math.abs(eulerY) > 0 ? eulerY : eulerZ;
+        currentEulerY.current = currentAngle;
+        
+        console.log('🎬 Button pressed! Euler Angles | X:', eulerX.toFixed(1), '° Y:', eulerY.toFixed(1), '° Z:', eulerZ.toFixed(1), '° | Using:', currentAngle.toFixed(1), '°');
+
+        if (!isBaseAngleCaptured.current) {
+          // ── Phase 1: Save base angle from fresh read ──
+          console.log('📍 Capturing base angle:', currentAngle.toFixed(1), '°');
+          setBaseAngle(currentAngle);
+          isBaseAngleCaptured.current = true;
           setWaitingForTurn(true);
+          setFaceVisible(true);
+          setConfidence(0.95);
           setStatusMsg(
             lang === 'en'
               ? '✓ Base captured! Now turn your head LEFT or RIGHT, then press again'
@@ -162,10 +232,15 @@ export default function FaceFrame({
           setDetecting(false);
           return;
         } else {
-          // ── Phase 2: Compare real-time angle against base ──
-          const angleDiff = Math.abs(eulerY - baseAngle);
-          const stepPassed = angleDiff > HEAD_TURN_THRESHOLD;
-          const score = Math.min(angleDiff / 20, 1);
+          // ── Phase 2: Compare fresh angle against base ──
+          const baseSaved = baseAngle ?? 0;
+          const angleDiff = Math.abs(currentAngle - baseSaved);
+          const absAngle = Math.abs(currentAngle);
+          // Either relative diff OR absolute angle
+          const stepPassed = angleDiff > HEAD_TURN_THRESHOLD || absAngle > 5;
+          const score = Math.min(Math.max(angleDiff, absAngle) / 20, 1);
+
+          console.log('🔄 Turn Check | Base:', baseSaved.toFixed(1), '° | Current:', currentAngle.toFixed(1), '° | Diff:', angleDiff.toFixed(1), '° | Threshold:', HEAD_TURN_THRESHOLD, '° | Passed:', stepPassed);
 
           if (!stepPassed) {
             setStatusMsg(
@@ -177,8 +252,8 @@ export default function FaceFrame({
             return;
           }
 
-          // ── Step 2 passed — capture photo for record ──
-          const photoPath = await capturePhoto();
+          // ── Step 2 passed ──
+          console.log('✅ Step 2 PASSED! Angle difference:', angleDiff.toFixed(1), '°, Score:', score);
           setLivenessScore(score);
           setConfidence(0.9);
           setFaceVisible(true);
@@ -234,6 +309,8 @@ export default function FaceFrame({
         stepPassed = avgEye < BLINK_THRESHOLD;
         score = 1 - avgEye;
 
+        console.log('👁️ Blink Check | Left:', leftEye.toFixed(2), '| Right:', rightEye.toFixed(2), '| Avg:', avgEye.toFixed(2), '| Passed:', stepPassed);
+
         if (!stepPassed) {
           setStatusMsg(
             lang === 'en'
@@ -247,6 +324,8 @@ export default function FaceFrame({
         const smileProb = face.smilingProbability ?? 0;
         stepPassed = smileProb > SMILE_THRESHOLD;
         score = smileProb;
+
+        console.log('😊 Smile Check | Probability:', smileProb.toFixed(2), '| Passed:', stepPassed);
 
         if (!stepPassed) {
           setStatusMsg(
@@ -266,6 +345,7 @@ export default function FaceFrame({
       }
 
       // ─── Step passed! ───
+      console.log('✅ Step', currentStep, 'PASSED! Score:', score);
       setStatusMsg(
         lang === 'en'
           ? `✓ Step verified! Score: ${(score * 100).toFixed(1)}%`
@@ -276,7 +356,7 @@ export default function FaceFrame({
       onLivenessComplete(score, photoPath);
 
     } catch (err) {
-      console.log('ML Kit error:', err);
+      console.log('❌ ML Kit error:', err);
       onError('Face analysis failed. Please try again.');
     } finally {
       setDetecting(false);
