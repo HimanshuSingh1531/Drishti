@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ScrollView,
   Alert,
   RefreshControl,
+  Animated,
 } from 'react-native';
 import {
   getAllRecords,
@@ -17,71 +18,135 @@ import {
 } from '../utils/storage';
 import { syncToAWS, isInternetAvailable, autoSyncIfOnline } from '../utils/syncService';
 import { checkTimeWindow, TimeCheckResult, formatShiftTime } from '../utils/timeWindow';
+import {
+  Users,
+  CloudUpload,
+  TrendingUp,
+  MapPin,
+  Clock,
+  Wifi,
+  WifiOff,
+  CheckCircle2,
+  XCircle,
+  ScanFace,
+  RefreshCw,
+  ClipboardList,
+  ChevronRight,
+  Activity,
+  Shield,
+  BadgeCheck,
+  Timer,
+  ArrowUpRight,
+} from 'lucide-react-native';
+
+const NAVY        = '#1A3C6E';
+const NAVY_DARK   = '#112A50';
+const ORANGE      = '#FF6B00';
+const BG          = '#F5F6FA';
+const WHITE       = '#FFFFFF';
+const BORDER      = '#DDE3EE';
+const MUTED       = '#6B7280';
+const LIGHT_NAVY  = '#EAF0FA';
+const LIGHT_ORANGE= '#FFF3EA';
+const GREEN       = '#22C55E';
+const RED         = '#EF4444';
+const LIGHT_GREEN = '#EDFBF3';
+const LIGHT_RED   = '#FEF2F2';
 
 const TRANSLATIONS = {
   en: {
     welcome: 'Welcome back',
     admin: 'Admin Dashboard',
-    todayAttendance: "Today's Attendance",
-    pendingSync: 'Pending Sync',
-    successRate: 'Success Rate',
-    zoneStatus: 'Zone Status',
+    todayAttendance: "Today's",
+    pendingSync: 'Pending',
+    successRate: 'Success',
+    zoneStatus: 'Zone',
     recentActivity: 'Recent Activity',
     syncBtn: 'Sync Now',
-    newScan: '+ New Face Scan',
+    newScan: 'New Face Scan',
     records: 'records',
     active: 'Active',
-    syncing: 'Syncing...',
+    syncing: 'Syncing…',
     synced: 'All Synced!',
-    offlineMode: 'Offline Mode',
-    onlineMode: 'Online Mode',
+    offlineMode: 'Offline',
+    onlineMode: 'Online',
     noRecords: 'No attendance records yet',
     syncSuccess: 'Sync Complete',
     syncFailed: 'Sync Failed',
     liveness: 'Liveness',
     shiftActive: 'Shift Active',
-    outsideShift: 'Outside Shift Hours',
+    outsideShift: 'Outside Shift',
     nextShift: 'Next',
     noMoreShifts: 'No more shifts today',
+    viewAll: 'View All',
+    attendance: 'Attendance',
+    sync: 'Sync',
+    rate: 'Rate',
   },
   hi: {
     welcome: 'वापस स्वागत है',
     admin: 'एडमिन डैशबोर्ड',
-    todayAttendance: 'आज की उपस्थिति',
-    pendingSync: 'लंबित सिंक',
-    successRate: 'सफलता दर',
-    zoneStatus: 'क्षेत्र स्थिति',
+    todayAttendance: 'आज',
+    pendingSync: 'बाकी',
+    successRate: 'सफलता',
+    zoneStatus: 'क्षेत्र',
     recentActivity: 'हालिया गतिविधि',
     syncBtn: 'अभी सिंक करें',
-    newScan: '+ नया फेस स्कैन',
+    newScan: 'नया फेस स्कैन',
     records: 'रिकॉर्ड',
     active: 'सक्रिय',
-    syncing: 'सिंक हो रहा है...',
+    syncing: 'सिंक हो रहा है…',
     synced: 'सब सिंक हो गया!',
-    offlineMode: 'ऑफलाइन मोड',
-    onlineMode: 'ऑनलाइन मोड',
+    offlineMode: 'ऑफलाइन',
+    onlineMode: 'ऑनलाइन',
     noRecords: 'अभी कोई रिकॉर्ड नहीं',
     syncSuccess: 'सिंक पूर्ण',
     syncFailed: 'सिंक विफल',
     liveness: 'जीवंतता',
     shiftActive: 'शिफ्ट सक्रिय',
-    outsideShift: 'शिफ्ट समय के बाहर',
+    outsideShift: 'शिफ्ट के बाहर',
     nextShift: 'अगली',
     noMoreShifts: 'आज कोई शिफ्ट नहीं',
+    viewAll: 'सब देखें',
+    attendance: 'उपस्थिति',
+    sync: 'सिंक',
+    rate: 'दर',
   },
 };
 
 export default function DashboardScreen({ navigation, route }: any) {
   const lang = route?.params?.lang || 'en';
-  const t = TRANSLATIONS[lang];
+  const t = TRANSLATIONS[lang] ?? TRANSLATIONS['en'];
 
-  const [records, setRecords] = useState<AttendanceRecord[]>([]);
-  const [todayCount, setTodayCount] = useState(0);
+  const [records,      setRecords]      = useState<AttendanceRecord[]>([]);
+  const [todayCount,   setTodayCount]   = useState(0);
   const [pendingCount, setPendingCount] = useState(0);
-  const [isOnline, setIsOnline] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced'>('idle');
-  const [refreshing, setRefreshing] = useState(false);
-  const [timeCheck, setTimeCheck] = useState<TimeCheckResult | null>(null);
+  const [isOnline,     setIsOnline]     = useState(false);
+  const [syncStatus,   setSyncStatus]   = useState<'idle' | 'syncing' | 'synced'>('idle');
+  const [refreshing,   setRefreshing]   = useState(false);
+  const [timeCheck,    setTimeCheck]    = useState<TimeCheckResult | null>(null);
+  const [showAll,      setShowAll]      = useState(false);
+
+  // Animated values for stat cards
+  const countAnim = useRef(new Animated.Value(0)).current;
+  const fadeAnim  = useRef(new Animated.Value(0)).current;
+  const syncRotate= useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, { toValue: 1, duration: 600, useNativeDriver: true }).start();
+  }, []);
+
+  useEffect(() => {
+    if (syncStatus === 'syncing') {
+      Animated.loop(
+        Animated.timing(syncRotate, { toValue: 1, duration: 900, useNativeDriver: true })
+      ).start();
+    } else {
+      syncRotate.setValue(0);
+    }
+  }, [syncStatus]);
+
+  const syncSpin = syncRotate.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
   const loadData = useCallback(async () => {
     try {
@@ -104,9 +169,7 @@ export default function DashboardScreen({ navigation, route }: any) {
     loadData();
     autoSyncIfOnline();
     setTimeCheck(checkTimeWindow());
-    const interval = setInterval(() => {
-      setTimeCheck(checkTimeWindow());
-    }, 30000);
+    const interval = setInterval(() => setTimeCheck(checkTimeWindow()), 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -124,358 +187,476 @@ export default function DashboardScreen({ navigation, route }: any) {
       const result = await syncToAWS();
       setSyncStatus(result.success ? 'synced' : 'idle');
       await loadData();
-      Alert.alert(
-        result.success ? t.syncSuccess : t.syncFailed,
-        result.message,
-      );
+      Alert.alert(result.success ? t.syncSuccess : t.syncFailed, result.message);
     } catch {
       setSyncStatus('idle');
-      Alert.alert(
-        t.syncFailed,
-        lang === 'en' ? 'Please try again.' : 'पुनः प्रयास करें।',
-      );
+      Alert.alert(t.syncFailed, lang === 'en' ? 'Please try again.' : 'पुनः प्रयास करें।');
     }
   }
 
   function formatTime(iso: string) {
-    try {
-      return new Date(iso).toLocaleTimeString('en-IN', {
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch { return iso; }
+    try { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); }
+    catch { return iso; }
   }
-
   function formatDate(iso: string) {
-    try {
-      return new Date(iso).toLocaleDateString('en-IN', {
-        day: '2-digit',
-        month: 'short',
-      });
-    } catch { return ''; }
+    try { return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }); }
+    catch { return ''; }
   }
 
-  const successRate =
-    records.length > 0
-      ? ((records.length / (records.length + 1)) * 100).toFixed(1)
-      : '0.0';
+  const successRate = records.length > 0
+    ? ((records.length / (records.length + 1)) * 100).toFixed(1)
+    : '0.0';
+
+  const displayRecords = showAll ? records : records.slice(0, 5);
+
+  // Live clock
+  const [currentTime, setCurrentTime] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const timeStr = currentTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const dateStr = currentTime.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 
   return (
     <SafeAreaView style={styles.container}>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerLeft}>
           <Text style={styles.welcomeText}>{t.welcome}</Text>
           <Text style={styles.adminText}>{t.admin}</Text>
         </View>
-        <View style={[
-          styles.modeBadge,
-          isOnline ? styles.modeBadgeOnline : styles.modeBadgeOffline,
-        ]}>
-          <View style={[
-            styles.modeDot,
-            isOnline ? styles.dotOnline : styles.dotOffline,
-          ]} />
-          <Text style={styles.modeText}>
-            {isOnline ? t.onlineMode : t.offlineMode}
-          </Text>
+        <View style={styles.headerRight}>
+          <View style={[styles.modeBadge, isOnline ? styles.modeBadgeOnline : styles.modeBadgeOffline]}>
+            {isOnline
+              ? <Wifi    size={12} color={GREEN}  strokeWidth={2.5} />
+              : <WifiOff size={12} color={ORANGE} strokeWidth={2.5} />
+            }
+            <Text style={[styles.modeText, { color: isOnline ? GREEN : ORANGE }]}>
+              {isOnline ? t.onlineMode : t.offlineMode}
+            </Text>
+          </View>
         </View>
       </View>
 
-      <ScrollView
-        style={styles.scroll}
+      <Animated.ScrollView
+        style={[styles.scroll, { opacity: fadeAnim }]}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }>
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={NAVY} />}
+      >
 
-        {/* Time Window Status */}
-        {timeCheck && (
-          <View style={[
-            styles.timeCard,
-            timeCheck.allowed ? styles.timeCardGreen : styles.timeCardRed,
-          ]}>
-            <Text style={styles.timeIcon}>🕐</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={[
-                styles.timeTitle,
-                { color: timeCheck.allowed ? '#1a7a4a' : '#a32d2d' },
-              ]}>
+        {/* ── Live Clock Card ── */}
+        <View style={styles.clockCard}>
+          <View style={styles.clockLeft}>
+            <View style={styles.clockIconWrap}>
+              <Clock size={20} color={WHITE} strokeWidth={2} />
+            </View>
+            <View>
+              <Text style={styles.clockTime}>{timeStr}</Text>
+              <Text style={styles.clockDate}>{dateStr}</Text>
+            </View>
+          </View>
+          {timeCheck && (
+            <View style={[styles.shiftTag, timeCheck.allowed ? styles.shiftTagGreen : styles.shiftTagRed]}>
+              <View style={[styles.shiftDot, { backgroundColor: timeCheck.allowed ? GREEN : RED }]} />
+              <Text style={[styles.shiftTagText, { color: timeCheck.allowed ? '#166534' : '#991B1B' }]}>
                 {timeCheck.allowed ? t.shiftActive : t.outsideShift}
               </Text>
-              <Text style={styles.timeSub}>
+            </View>
+          )}
+        </View>
+
+        {/* ── Shift Info ── */}
+        {timeCheck && (
+          <View style={[styles.shiftCard, timeCheck.allowed ? styles.shiftCardGreen : styles.shiftCardRed]}>
+            <View style={[styles.shiftIconWrap, timeCheck.allowed ? styles.iconWrapGreen : styles.iconWrapRed]}>
+              <Timer size={18} color={timeCheck.allowed ? GREEN : RED} strokeWidth={2} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.shiftTitle, { color: timeCheck.allowed ? '#166534' : '#991B1B' }]}>
                 {timeCheck.allowed && timeCheck.currentShift
-                  ? `${lang === 'en'
-                    ? timeCheck.currentShift.name
-                    : timeCheck.currentShift.nameHi} • ${formatShiftTime(
-                      timeCheck.currentShift.startHour,
-                      timeCheck.currentShift.startMinute,
-                    )} - ${formatShiftTime(
-                      timeCheck.currentShift.endHour,
-                      timeCheck.currentShift.endMinute,
-                    )}`
+                  ? `${lang === 'en' ? timeCheck.currentShift.name : timeCheck.currentShift.nameHi}`
                   : timeCheck.nextShift
-                  ? `${t.nextShift}: ${lang === 'en'
-                    ? timeCheck.nextShift.name
-                    : timeCheck.nextShift.nameHi}`
+                  ? `${t.nextShift}: ${lang === 'en' ? timeCheck.nextShift.name : timeCheck.nextShift.nameHi}`
                   : t.noMoreShifts}
               </Text>
+              {timeCheck.allowed && timeCheck.currentShift && (
+                <Text style={styles.shiftSub}>
+                  {formatShiftTime(timeCheck.currentShift.startHour, timeCheck.currentShift.startMinute)}
+                  {' — '}
+                  {formatShiftTime(timeCheck.currentShift.endHour, timeCheck.currentShift.endMinute)}
+                </Text>
+              )}
             </View>
+            {timeCheck.allowed
+              ? <CheckCircle2 size={18} color={GREEN} strokeWidth={2} />
+              : <XCircle      size={18} color={RED}   strokeWidth={2} />
+            }
           </View>
         )}
 
-        {/* Stat Cards */}
+        {/* ── Stat Cards ── */}
         <View style={styles.statsGrid}>
-          <StatCard
-            label={t.todayAttendance}
-            value={String(todayCount)}
-            color="#1A3C6E"
-            icon="👥"
-          />
-          <StatCard
-            label={t.pendingSync}
-            value={String(pendingCount)}
-            color={pendingCount > 0 ? '#FF6B00' : '#2ECC71'}
-            icon="🔄"
-          />
-          <StatCard
-            label={t.successRate}
-            value={`${successRate}%`}
-            color="#2ECC71"
-            icon="✅"
-          />
-          <StatCard
-            label={t.zoneStatus}
-            value={t.active}
-            color="#1A3C6E"
-            icon="📍"
-          />
+          <StatCard icon={<Users       size={20} color={NAVY}   strokeWidth={2} />} label={t.attendance} value={String(todayCount)} accent={NAVY}   bg={LIGHT_NAVY}   />
+          <StatCard icon={<CloudUpload size={20} color={pendingCount > 0 ? ORANGE : GREEN} strokeWidth={2} />} label={t.sync} value={String(pendingCount)} accent={pendingCount > 0 ? ORANGE : GREEN} bg={pendingCount > 0 ? LIGHT_ORANGE : LIGHT_GREEN} />
+          <StatCard icon={<TrendingUp  size={20} color={GREEN}  strokeWidth={2} />} label={t.rate}       value={`${successRate}%`} accent={GREEN}  bg={LIGHT_GREEN}  />
+          <StatCard icon={<Shield      size={20} color={NAVY}   strokeWidth={2} />} label={t.zoneStatus} value={t.active}          accent={NAVY}   bg={LIGHT_NAVY}   />
         </View>
 
-        {/* Sync Button */}
+        {/* ── Sync Button ── */}
         <TouchableOpacity
           style={[
             styles.syncBtn,
-            syncStatus === 'synced' && styles.syncBtnDone,
+            syncStatus === 'synced'  && styles.syncBtnDone,
             (pendingCount === 0 || syncStatus === 'syncing') && styles.syncBtnDisabled,
           ]}
           onPress={handleSync}
-          disabled={syncStatus === 'syncing' || pendingCount === 0}>
-          <Text style={styles.syncBtnText}>
-            {syncStatus === 'syncing'
-              ? t.syncing
-              : syncStatus === 'synced'
-              ? t.synced
-              : `${t.syncBtn} (${pendingCount} ${t.records})`}
-          </Text>
+          disabled={syncStatus === 'syncing' || pendingCount === 0}
+          activeOpacity={0.85}
+        >
+          <View style={styles.syncBtnInner}>
+            <View style={styles.syncBtnIconWrap}>
+              {syncStatus === 'syncing' ? (
+                <Animated.View style={{ transform: [{ rotate: syncSpin }] }}>
+                  <RefreshCw size={18} color={WHITE} strokeWidth={2.5} />
+                </Animated.View>
+              ) : syncStatus === 'synced' ? (
+                <CheckCircle2 size={18} color={WHITE} strokeWidth={2.5} />
+              ) : (
+                <CloudUpload size={18} color={WHITE} strokeWidth={2.5} />
+              )}
+            </View>
+            <Text style={styles.syncBtnText}>
+              {syncStatus === 'syncing'
+                ? t.syncing
+                : syncStatus === 'synced'
+                ? t.synced
+                : `${t.syncBtn} (${pendingCount} ${t.records})`}
+            </Text>
+          </View>
+          {syncStatus === 'idle' && pendingCount > 0 && (
+            <View style={styles.syncCountBadge}>
+              <Text style={styles.syncCountText}>{pendingCount}</Text>
+            </View>
+          )}
         </TouchableOpacity>
 
-        {/* Recent Activity */}
+        {/* ── Recent Activity ── */}
         <View style={styles.activityCard}>
-          <Text style={styles.activityTitle}>{t.recentActivity}</Text>
+          <View style={styles.activityHeader}>
+            <View style={styles.activityHeaderLeft}>
+              <ClipboardList size={16} color={NAVY} strokeWidth={2} style={{ marginRight: 8 }} />
+              <Text style={styles.activityTitle}>{t.recentActivity}</Text>
+            </View>
+            {records.length > 5 && (
+              <TouchableOpacity onPress={() => setShowAll(v => !v)} style={styles.viewAllBtn} activeOpacity={0.7}>
+                <Text style={styles.viewAllText}>{showAll ? 'Less' : t.viewAll}</Text>
+                <ChevronRight size={13} color={NAVY} strokeWidth={2.5} />
+              </TouchableOpacity>
+            )}
+          </View>
+
           {records.length === 0 ? (
             <View style={styles.emptyBox}>
-              <Text style={styles.emptyIcon}>📋</Text>
+              <View style={styles.emptyIconWrap}>
+                <Activity size={32} color="#C0CAD8" strokeWidth={1.5} />
+              </View>
               <Text style={styles.emptyText}>{t.noRecords}</Text>
             </View>
           ) : (
-            records.map((item, i) => (
+            displayRecords.map((item, i) => (
               <View key={item.id ?? i}>
                 <View style={styles.activityRow}>
-                  <View style={styles.avatarCircle}>
-                    <Text style={styles.avatarText}>
-                      {item.empName?.charAt(0) ?? '?'}
-                    </Text>
+                  {/* Avatar */}
+                  <View style={styles.activityAvatarWrap}>
+                    <View style={styles.activityAvatar}>
+                      <Text style={styles.activityAvatarText}>{item.empName?.charAt(0)?.toUpperCase() ?? '?'}</Text>
+                    </View>
                   </View>
+
+                  {/* Info */}
                   <View style={styles.activityInfo}>
                     <Text style={styles.activityName}>{item.empName}</Text>
-                    <Text style={styles.activityEmpId}>
-                      {item.empId} • {item.locationZone}
-                    </Text>
-                    <Text style={styles.activityLiveness}>
-                      {t.liveness}: {(item.livenessScore * 100).toFixed(1)}%
-                    </Text>
+                    <View style={styles.activityMetaRow}>
+                      <BadgeCheck size={11} color={MUTED} strokeWidth={2} />
+                      <Text style={styles.activityMeta}>{item.empId}</Text>
+                    </View>
+                    <View style={styles.activityMetaRow}>
+                      <MapPin size={11} color={MUTED} strokeWidth={2} />
+                      <Text style={styles.activityMeta}>{item.locationZone}</Text>
+                    </View>
+                    {/* Liveness bar */}
+                    <View style={styles.livenessRow}>
+                      <View style={styles.livenessBg}>
+                        <View style={[styles.livenessFill, { width: `${Math.min(item.livenessScore * 100, 100)}%` as any }]} />
+                      </View>
+                      <Text style={styles.livenessScore}>{(item.livenessScore * 100).toFixed(0)}%</Text>
+                    </View>
                   </View>
+
+                  {/* Right */}
                   <View style={styles.activityRight}>
-                    <Text style={styles.activityTime}>
-                      {formatTime(item.timestamp)}
-                    </Text>
-                    <Text style={styles.activityDate}>
-                      {formatDate(item.timestamp)}
-                    </Text>
-                    <View style={[
-                      styles.syncBadge,
-                      item.synced === 1 ? styles.syncBadgeDone : styles.syncBadgePending,
-                    ]}>
-                      <Text style={[
-                        styles.syncBadgeText,
-                        item.synced === 1 ? styles.syncTextDone : styles.syncTextPending,
-                      ]}>
-                        {item.synced === 1
-                          ? (lang === 'en' ? '✓ Synced' : '✓ सिंक')
-                          : (lang === 'en' ? '⏳ Pending' : '⏳ बाकी')}
+                    <Text style={styles.activityTime}>{formatTime(item.timestamp)}</Text>
+                    <Text style={styles.activityDate}>{formatDate(item.timestamp)}</Text>
+                    <View style={[styles.syncPill, item.synced === 1 ? styles.syncPillDone : styles.syncPillPending]}>
+                      {item.synced === 1
+                        ? <CheckCircle2 size={10} color={GREEN}  strokeWidth={2.5} />
+                        : <Timer        size={10} color={ORANGE} strokeWidth={2.5} />
+                      }
+                      <Text style={[styles.syncPillText, item.synced === 1 ? styles.syncTextDone : styles.syncTextPending]}>
+                        {item.synced === 1 ? 'Synced' : 'Pending'}
                       </Text>
                     </View>
                   </View>
                 </View>
-                {i < records.length - 1 && <View style={styles.divider} />}
+                {i < displayRecords.length - 1 && <View style={styles.rowDivider} />}
               </View>
             ))
           )}
         </View>
 
-        {/* New Scan Button */}
+        {/* ── New Scan Button ── */}
         <TouchableOpacity
           style={styles.newScanBtn}
-          onPress={() => navigation.navigate('FaceScan', { lang })}>
-          <Text style={styles.newScanText}>{t.newScan}</Text>
+          onPress={() => navigation.navigate('FaceScan', { lang })}
+          activeOpacity={0.85}
+        >
+          <View style={styles.newScanLeft}>
+            <View style={styles.newScanIconWrap}>
+              <ScanFace size={22} color={ORANGE} strokeWidth={2} />
+            </View>
+            <Text style={styles.newScanText}>{t.newScan}</Text>
+          </View>
+          <View style={styles.newScanArrow}>
+            <ArrowUpRight size={16} color={WHITE} strokeWidth={2.5} />
+          </View>
         </TouchableOpacity>
 
         <View style={{ height: 30 }} />
-      </ScrollView>
+      </Animated.ScrollView>
     </SafeAreaView>
   );
 }
 
-function StatCard({ label, value, color, icon }: any) {
+function StatCard({ icon, label, value, accent, bg }: { icon: React.ReactNode; label: string; value: string; accent: string; bg: string }) {
   return (
-    <View style={styles.statCard}>
-      <Text style={styles.statIcon}>{icon}</Text>
-      <Text style={[styles.statValue, { color }]}>{value}</Text>
+    <View style={[styles.statCard, { borderColor: accent + '30' }]}>
+      <View style={[styles.statIconWrap, { backgroundColor: bg }]}>{icon}</View>
+      <Text style={[styles.statValue, { color: accent }]}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F6FA' },
+  container: { flex: 1, backgroundColor: BG },
+
+  // Header
   header: {
-    backgroundColor: '#1A3C6E',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    backgroundColor: NAVY,
+    paddingHorizontal: 16, paddingVertical: 14,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    elevation: 4,
+    shadowColor: NAVY, shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 3 }, shadowRadius: 6,
   },
-  welcomeText: { color: 'rgba(255,255,255,0.6)', fontSize: 11 },
-  adminText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  headerLeft:  {},
+  headerRight: {},
+  welcomeText: { color: 'rgba(255,255,255,0.55)', fontSize: 11, fontWeight: '500' },
+  adminText:   { color: WHITE, fontSize: 17, fontWeight: '700', letterSpacing: 0.2 },
   modeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 11, paddingVertical: 6, borderRadius: 20,
   },
-  modeBadgeOnline: { backgroundColor: 'rgba(46,204,113,0.2)' },
-  modeBadgeOffline: { backgroundColor: 'rgba(255,255,255,0.15)' },
-  modeDot: { width: 7, height: 7, borderRadius: 4 },
-  dotOnline: { backgroundColor: '#2ECC71' },
-  dotOffline: { backgroundColor: '#FF6B00' },
-  modeText: { color: '#fff', fontSize: 11 },
-  scroll: { flex: 1, padding: 16 },
-  timeCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 12,
+  modeBadgeOnline:  { backgroundColor: 'rgba(34,197,94,0.15)',  borderWidth: 1, borderColor: 'rgba(34,197,94,0.3)'  },
+  modeBadgeOffline: { backgroundColor: 'rgba(255,107,0,0.15)',  borderWidth: 1, borderColor: 'rgba(255,107,0,0.3)'  },
+  modeText: { fontSize: 11, fontWeight: '700' },
+
+  scroll: { flex: 1, paddingHorizontal: 16, paddingTop: 14 },
+
+  // Clock card
+  clockCard: {
+    backgroundColor: NAVY,
+    borderRadius: 18, padding: 16,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 10,
+    elevation: 3,
+    shadowColor: NAVY, shadowOpacity: 0.2,
+    shadowOffset: { width: 0, height: 3 }, shadowRadius: 8,
   },
-  timeCardGreen: { backgroundColor: '#E8F8F0' },
-  timeCardRed: { backgroundColor: '#FFF0F0' },
-  timeIcon: { fontSize: 20 },
-  timeTitle: { fontSize: 13, fontWeight: '600' },
-  timeSub: { fontSize: 11, color: '#666', marginTop: 2 },
+  clockLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  clockIconWrap: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  clockTime: { color: WHITE, fontSize: 22, fontWeight: '800', letterSpacing: 1 },
+  clockDate: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '500', marginTop: 2 },
+  shiftTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20,
+  },
+  shiftTagGreen: { backgroundColor: LIGHT_GREEN, borderWidth: 1, borderColor: '#B6EDD0' },
+  shiftTagRed:   { backgroundColor: LIGHT_RED,   borderWidth: 1, borderColor: '#FECACA' },
+  shiftDot: { width: 6, height: 6, borderRadius: 3 },
+  shiftTagText: { fontSize: 10, fontWeight: '700' },
+
+  // Shift card
+  shiftCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    borderRadius: 14, padding: 13, marginBottom: 14,
+    borderWidth: 1,
+  },
+  shiftCardGreen: { backgroundColor: LIGHT_GREEN, borderColor: '#B6EDD0' },
+  shiftCardRed:   { backgroundColor: LIGHT_RED,   borderColor: '#FECACA' },
+  shiftIconWrap: {
+    width: 38, height: 38, borderRadius: 11,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  iconWrapGreen: { backgroundColor: WHITE, borderWidth: 1, borderColor: '#B6EDD0' },
+  iconWrapRed:   { backgroundColor: WHITE, borderWidth: 1, borderColor: '#FECACA' },
+  shiftTitle: { fontSize: 13, fontWeight: '700' },
+  shiftSub:   { fontSize: 11, color: MUTED, marginTop: 2 },
+
+  // Stat grid
   statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    marginBottom: 16,
+    flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14,
   },
   statCard: {
-    backgroundColor: '#fff',
-    borderRadius: 14,
-    padding: 14,
+    backgroundColor: WHITE,
+    borderRadius: 16, padding: 14,
     alignItems: 'center',
     width: '47%',
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
-    gap: 4,
+    borderWidth: 1,
+    gap: 6,
+    elevation: 2,
+    shadowColor: '#000', shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 }, shadowRadius: 6,
   },
-  statIcon: { fontSize: 22 },
-  statValue: { fontSize: 22, fontWeight: '700' },
-  statLabel: { fontSize: 11, color: '#888', textAlign: 'center' },
+  statIconWrap: {
+    width: 44, height: 44, borderRadius: 13,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  statValue: { fontSize: 24, fontWeight: '800' },
+  statLabel: { fontSize: 11, color: MUTED, fontWeight: '600', textAlign: 'center' },
+
+  // Sync button
   syncBtn: {
-    backgroundColor: '#FF6B00',
-    borderRadius: 14,
-    paddingVertical: 15,
-    alignItems: 'center',
-    marginBottom: 16,
+    backgroundColor: ORANGE,
+    borderRadius: 16, paddingVertical: 14, paddingHorizontal: 18,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 14,
+    elevation: 4,
+    shadowColor: ORANGE, shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 3 }, shadowRadius: 8,
   },
-  syncBtnDone: { backgroundColor: '#2ECC71' },
-  syncBtnDisabled: { backgroundColor: '#CCCCCC' },
-  syncBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  syncBtnDone:     { backgroundColor: GREEN, shadowColor: GREEN },
+  syncBtnDisabled: { backgroundColor: '#C0CAD8', elevation: 0, shadowOpacity: 0 },
+  syncBtnInner: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  syncBtnIconWrap: {
+    width: 34, height: 34, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  syncBtnText: { color: WHITE, fontSize: 14, fontWeight: '700' },
+  syncCountBadge: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    width: 28, height: 28, borderRadius: 14,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  syncCountText: { color: WHITE, fontSize: 12, fontWeight: '800' },
+
+  // Activity card
   activityCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
+    backgroundColor: WHITE,
+    borderRadius: 18, padding: 16,
+    marginBottom: 14,
+    borderWidth: 1, borderColor: BORDER,
+    elevation: 2,
+    shadowColor: '#000', shadowOpacity: 0.04,
+    shadowOffset: { width: 0, height: 2 }, shadowRadius: 6,
   },
-  activityTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1A3C6E',
-    marginBottom: 12,
+  activityHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: 14,
   },
-  emptyBox: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    gap: 8,
+  activityHeaderLeft: { flexDirection: 'row', alignItems: 'center' },
+  activityTitle: { fontSize: 14, fontWeight: '700', color: NAVY },
+  viewAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+  viewAllText: { fontSize: 12, color: NAVY, fontWeight: '600' },
+
+  emptyBox: { alignItems: 'center', paddingVertical: 28, gap: 10 },
+  emptyIconWrap: {
+    width: 64, height: 64, borderRadius: 32,
+    backgroundColor: '#F0F3FA',
+    alignItems: 'center', justifyContent: 'center',
   },
-  emptyIcon: { fontSize: 32 },
-  emptyText: { color: '#AAAAAA', fontSize: 13 },
+  emptyText: { color: MUTED, fontSize: 13, fontWeight: '500' },
+
   activityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    gap: 10,
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 11, gap: 10,
   },
-  avatarCircle: {
-    width: 38,
-    height: 38,
-    backgroundColor: '#E8EDF5',
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
+  activityAvatarWrap: {
+    padding: 2, borderRadius: 22,
+    borderWidth: 1.5, borderColor: '#C8D9F0',
   },
-  avatarText: { color: '#1A3C6E', fontWeight: '600', fontSize: 15 },
-  activityInfo: { flex: 1 },
-  activityName: { fontSize: 13, fontWeight: '500', color: '#1C1C1E' },
-  activityEmpId: { fontSize: 11, color: '#888', marginTop: 1 },
-  activityLiveness: { fontSize: 10, color: '#2ECC71', marginTop: 2 },
-  activityRight: { alignItems: 'flex-end', gap: 3 },
-  activityTime: { fontSize: 12, fontWeight: '500', color: '#1C1C1E' },
-  activityDate: { fontSize: 10, color: '#888' },
-  syncBadge: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 8,
+  activityAvatar: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: LIGHT_NAVY,
+    alignItems: 'center', justifyContent: 'center',
   },
-  syncBadgeDone: { backgroundColor: '#E8F8F0' },
-  syncBadgePending: { backgroundColor: '#FFF8F0' },
-  syncBadgeText: { fontSize: 10, fontWeight: '600' },
-  syncTextDone: { color: '#2ECC71' },
-  syncTextPending: { color: '#FF6B00' },
-  divider: { height: 0.5, backgroundColor: '#F0F0F0' },
+  activityAvatarText: { color: NAVY, fontWeight: '800', fontSize: 15 },
+  activityInfo: { flex: 1, gap: 3 },
+  activityName: { fontSize: 13, fontWeight: '700', color: '#1C1C1E' },
+  activityMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  activityMeta: { fontSize: 11, color: MUTED },
+
+  // Liveness bar
+  livenessRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
+  livenessBg: {
+    flex: 1, height: 4, backgroundColor: '#E8ECF4',
+    borderRadius: 2, overflow: 'hidden',
+  },
+  livenessFill: { height: 4, backgroundColor: GREEN, borderRadius: 2 },
+  livenessScore: { fontSize: 10, color: GREEN, fontWeight: '700', minWidth: 28 },
+
+  activityRight: { alignItems: 'flex-end', gap: 4 },
+  activityTime: { fontSize: 12, fontWeight: '700', color: NAVY },
+  activityDate: { fontSize: 10, color: MUTED },
+  syncPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    paddingHorizontal: 7, paddingVertical: 3, borderRadius: 10,
+  },
+  syncPillDone:    { backgroundColor: LIGHT_GREEN },
+  syncPillPending: { backgroundColor: LIGHT_ORANGE },
+  syncPillText:    { fontSize: 9, fontWeight: '700' },
+  syncTextDone:    { color: GREEN  },
+  syncTextPending: { color: ORANGE },
+
+  rowDivider: { height: 1, backgroundColor: '#F0F3FA' },
+
+  // New scan button
   newScanBtn: {
-    backgroundColor: '#1A3C6E',
-    borderRadius: 14,
-    paddingVertical: 15,
-    alignItems: 'center',
+    backgroundColor: NAVY,
+    borderRadius: 16, paddingVertical: 14, paddingHorizontal: 18,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    elevation: 4,
+    shadowColor: NAVY, shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 4 }, shadowRadius: 10,
   },
-  newScanText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  newScanLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  newScanIconWrap: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: 'rgba(255,107,0,0.18)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  newScanText: { color: WHITE, fontSize: 15, fontWeight: '700' },
+  newScanArrow: {
+    width: 32, height: 32, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center', justifyContent: 'center',
+  },
 });

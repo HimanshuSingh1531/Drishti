@@ -1,39 +1,13 @@
 import Geolocation from 'react-native-geolocation-service';
 import { PermissionsAndroid, Platform } from 'react-native';
 
-// ─── Allowed Zones ───
-// Demo mode: 50km radius — judges kahin bhi test kar sakte hain
-// Production mein: radius 200m kar do aur AWS se zones load karo
-export const ALLOWED_ZONES = [
-  {
-    id: 'RAJASTHAN_ZONE',
-    name: 'Rajasthan Field Zone',
-    latitude: 25.3550,
-    longitude: 74.6313,
-    radiusMeters: 100000, // 100km — Hurda bhi cover ho jayega!
-  },
-  {
-    id: 'DELHI_HQ',
-    name: 'Delhi Headquarters',
-    latitude: 28.6139,
-    longitude: 77.2090,
-    radiusMeters: 100000,
-  },
-  {
-    id: 'MUMBAI_ZONE',
-    name: 'Mumbai Field Zone',
-    latitude: 19.0760,
-    longitude: 72.8777,
-    radiusMeters: 100000,
-  },
-  {
-    id: 'BANGALORE_ZONE',
-    name: 'Bangalore Field Zone',
-    latitude: 12.9716,
-    longitude: 77.5946,
-    radiusMeters: 100000,
-  },
-];
+// ─── India bounds ───
+const INDIA_BOUNDS = {
+  minLat: 8.0,
+  maxLat: 37.6,
+  minLon: 68.0,
+  maxLon: 97.5,
+};
 
 export interface GeoResult {
   allowed: boolean;
@@ -42,24 +16,37 @@ export interface GeoResult {
   latitude: number;
   longitude: number;
   accuracy: number;
+  stateRegion: string;
 }
 
-// ─── Haversine Distance Formula ───
-function getDistanceMeters(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number,
-): number {
-  const R = 6371000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+// ─── Detect region name from coordinates ───
+function detectRegion(lat: number, lon: number): string {
+  if (lat >= 26.0 && lat <= 30.2 && lon >= 69.5 && lon <= 78.3) return 'Rajasthan';
+  if (lat >= 28.4 && lat <= 28.9 && lon >= 76.8 && lon <= 77.4) return 'Delhi NCR';
+  if (lat >= 18.8 && lat <= 19.3 && lon >= 72.7 && lon <= 73.1) return 'Mumbai Region';
+  if (lat >= 12.7 && lat <= 13.2 && lon >= 77.4 && lon <= 77.8) return 'Bangalore Region';
+  if (lat >= 22.0 && lat <= 26.5 && lon >= 78.0 && lon <= 84.5) return 'Madhya Pradesh';
+  if (lat >= 17.0 && lat <= 22.0 && lon >= 76.0 && lon <= 80.5) return 'Maharashtra';
+  if (lat >= 20.0 && lat <= 27.5 && lon >= 83.0 && lon <= 87.5) return 'Odisha/Jharkhand';
+  if (lat >= 22.5 && lat <= 27.5 && lon >= 85.0 && lon <= 92.0) return 'West Bengal';
+  if (lat >= 26.0 && lat <= 31.5 && lon >= 75.0 && lon <= 81.0) return 'Uttar Pradesh';
+  if (lat >= 29.5 && lat <= 33.5 && lon >= 74.0 && lon <= 79.5) return 'Punjab/Himachal';
+  if (lat >= 8.0 && lat <= 13.5 && lon >= 76.5 && lon <= 80.5) return 'Tamil Nadu/Kerala';
+  if (lat >= 13.0 && lat <= 19.5 && lon >= 76.5 && lon <= 84.5) return 'Andhra/Telangana';
+  if (lat >= 20.0 && lat <= 24.0 && lon >= 68.5 && lon <= 74.5) return 'Gujarat';
+  if (lat >= 22.0 && lat <= 26.5 && lon >= 84.5 && lon <= 88.5) return 'Bihar/Jharkhand';
+  if (lat >= 10.5 && lat <= 14.0 && lon >= 74.0 && lon <= 77.5) return 'Karnataka';
+  return 'India Field Zone';
+}
+
+// ─── Check if coordinates are within India ───
+function isInIndia(lat: number, lon: number): boolean {
+  return (
+    lat >= INDIA_BOUNDS.minLat &&
+    lat <= INDIA_BOUNDS.maxLat &&
+    lon >= INDIA_BOUNDS.minLon &&
+    lon <= INDIA_BOUNDS.maxLon
+  );
 }
 
 // ─── Request Location Permission ───
@@ -69,7 +56,7 @@ export async function requestLocationPermission(): Promise<boolean> {
       PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       {
         title: 'DRISHTI Location Permission',
-        message: 'DRISHTI needs location access to verify you are in an allowed zone.',
+        message: 'DRISHTI needs location to capture GPS coordinates for attendance.',
         buttonPositive: 'Allow',
         buttonNegative: 'Deny',
       },
@@ -79,7 +66,7 @@ export async function requestLocationPermission(): Promise<boolean> {
   return true;
 }
 
-// ─── Get Current Location & Validate Zone ───
+// ─── Main GeoFence Validation ───
 export function validateGeoFence(): Promise<GeoResult> {
   return new Promise(async (resolve, reject) => {
     const hasPermission = await requestLocationPermission();
@@ -92,32 +79,21 @@ export function validateGeoFence(): Promise<GeoResult> {
       position => {
         const { latitude, longitude, accuracy } = position.coords;
 
-        // Check each allowed zone — closest zone find karo
-        let closestZone = ALLOWED_ZONES[0];
-        let closestDistance = Infinity;
+        // Detect region name
+        const stateRegion = detectRegion(latitude, longitude);
 
-        for (const zone of ALLOWED_ZONES) {
-          const dist = getDistanceMeters(
-            latitude,
-            longitude,
-            zone.latitude,
-            zone.longitude,
-          );
-          if (dist < closestDistance) {
-            closestDistance = dist;
-            closestZone = zone;
-          }
-        }
-
-        const allowed = closestDistance <= closestZone.radiusMeters;
+        // Check if in India
+        const inIndia = isInIndia(latitude, longitude);
 
         resolve({
-          allowed,
-          zoneName: closestZone.name,
-          distanceMeters: Math.round(closestDistance),
+          // ─── Always allowed in India-wide mode ───
+          allowed: true,
+          zoneName: stateRegion,
+          distanceMeters: 0,
           latitude,
           longitude,
           accuracy: Math.round(accuracy),
+          stateRegion,
         });
       },
       error => {

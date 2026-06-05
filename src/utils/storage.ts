@@ -217,3 +217,17 @@ export async function getAllEmployees(): Promise<any[]> {
   }
   return employees;
 }
+// ─── Get Employee by ID ───
+export async function getEmployeeByEmpId(empId: string): Promise<any | null> {
+  const db = await openDB();
+  const [result] = await db.executeSql(
+    `SELECT * FROM ${TABLES.EMPLOYEES} WHERE empId = ? AND isActive = 1`,
+    [empId],
+  );
+  if (result.rows.length > 0) {
+    const emp = result.rows.item(0);
+    emp.faceEmbedding = JSON.parse(emp.faceEmbedding || '[]');
+    return emp;
+  }
+  return null;
+}

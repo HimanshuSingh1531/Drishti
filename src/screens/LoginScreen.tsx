@@ -12,106 +12,118 @@ import {
   Platform,
   ScrollView,
 } from 'react-native';
+import { getEmployeeByEmpId } from '../utils/storage';
+import {
+  ArrowLeft,
+  BadgeCheck,
+  User,
+  ShieldCheck,
+  ScanFace,
+  Wifi,
+  ChevronRight,
+  UserPlus,
+} from 'lucide-react-native';
+
+const NAVY        = '#1A3C6E';
+const ORANGE      = '#FF6B00';
+const BG          = '#F5F6FA';
+const WHITE       = '#FFFFFF';
+const BORDER      = '#DDE3EE';
+const MUTED       = '#6B7280';
+const LIGHT_NAVY  = '#EAF0FA';
+const LIGHT_ORANGE= '#FFF3EA';
+const GREEN       = '#22C55E';
 
 const TRANSLATIONS = {
   en: {
     title: 'Employee Login',
-    subtitle: 'Enter your credentials to continue',
+    subtitle: 'Enter your registered credentials to continue',
     empIdLabel: 'Employee ID',
     empIdPlaceholder: 'e.g. DL-2024-0042',
     nameLabel: 'Full Name',
     namePlaceholder: 'e.g. Ramesh Kumar',
-    deptLabel: 'Department',
-    deptPlaceholder: 'e.g. Field Operations',
     loginBtn: 'Proceed to Face Scan',
-    validating: 'Validating...',
-    errorTitle: 'Invalid Details',
-    errorMsg: 'Please fill all fields correctly.',
-    empIdError: 'Employee ID must start with DL-',
-    nameError: 'Name must be at least 3 characters.',
+    validating: 'Verifying...',
+    notRegistered: 'Not Registered!',
+    notRegisteredMsg: 'This Employee ID is not registered. Please register first.',
+    nameMismatch: 'Name Mismatch!',
+    nameMismatchMsg: 'The name does not match our records for this Employee ID.',
     offline: 'Offline Mode Active',
-    secureNote: 'Your data is encrypted and stored securely offline.',
+    secureNote: 'Face verification will confirm your identity.',
+    registerLink: 'Not registered yet? Register here',
   },
   hi: {
     title: 'कर्मचारी लॉगिन',
-    subtitle: 'जारी रखने के लिए अपनी जानकारी दर्ज करें',
+    subtitle: 'अपनी पंजीकृत जानकारी दर्ज करें',
     empIdLabel: 'कर्मचारी आईडी',
     empIdPlaceholder: 'जैसे DL-2024-0042',
     nameLabel: 'पूरा नाम',
     namePlaceholder: 'जैसे रमेश कुमार',
-    deptLabel: 'विभाग',
-    deptPlaceholder: 'जैसे फील्ड ऑपरेशंस',
     loginBtn: 'फेस स्कैन पर जाएं',
     validating: 'सत्यापित हो रहा है...',
-    errorTitle: 'अमान्य जानकारी',
-    errorMsg: 'कृपया सभी फ़ील्ड सही से भरें।',
-    empIdError: 'कर्मचारी आईडी DL- से शुरू होनी चाहिए।',
-    nameError: 'नाम कम से कम 3 अक्षर का होना चाहिए।',
+    notRegistered: 'पंजीकृत नहीं!',
+    notRegisteredMsg: 'यह कर्मचारी आईडी पंजीकृत नहीं है। कृपया पहले रजिस्टर करें।',
+    nameMismatch: 'नाम मेल नहीं खाता!',
+    nameMismatchMsg: 'नाम हमारे रिकॉर्ड से मेल नहीं खाता।',
     offline: 'ऑफलाइन मोड सक्रिय',
-    secureNote: 'आपका डेटा एन्क्रिप्टेड और सुरक्षित रूप से सहेजा जाता है।',
+    secureNote: 'फेस वेरिफिकेशन आपकी पहचान की पुष्टि करेगा।',
+    registerLink: 'अभी पंजीकृत नहीं? यहाँ रजिस्टर करें',
   },
-};
-
-const DEPARTMENTS = {
-  en: [
-    'Field Operations',
-    'Site Management',
-    'Survey Team',
-    'Quality Control',
-    'Administration',
-  ],
-  hi: [
-    'फील्ड ऑपरेशंस',
-    'साइट प्रबंधन',
-    'सर्वे टीम',
-    'गुणवत्ता नियंत्रण',
-    'प्रशासन',
-  ],
 };
 
 export default function LoginScreen({ navigation, route }: any) {
   const lang = route?.params?.lang || 'en';
-  const t = TRANSLATIONS[lang];
+  const t = TRANSLATIONS[lang] ?? TRANSLATIONS['en'];
 
-  const [empId, setEmpId] = useState('');
-  const [empName, setEmpName] = useState('');
-  const [department, setDepartment] = useState('');
+  const [empId,      setEmpId]      = useState('');
+  const [empName,    setEmpName]    = useState('');
   const [validating, setValidating] = useState(false);
-  const [selectedDept, setSelectedDept] = useState<number | null>(null);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  // ─── Validate Fields ───
-  function validate(): boolean {
-    if (!empId.startsWith('DL-') || empId.length < 8) {
-      Alert.alert(t.errorTitle, t.empIdError);
-      return false;
-    }
-    if (empName.trim().length < 3) {
-      Alert.alert(t.errorTitle, t.nameError);
-      return false;
-    }
-    if (!department) {
-      Alert.alert(t.errorTitle, t.errorMsg);
-      return false;
-    }
-    return true;
-  }
-
-  // ─── Handle Login ───
   async function handleLogin() {
-    if (!validate()) return;
+    if (!empId.trim()) {
+      Alert.alert('Error', 'Please enter Employee ID');
+      return;
+    }
+    if (!empName.trim()) {
+      Alert.alert('Error', 'Please enter your name');
+      return;
+    }
+
     setValidating(true);
+    try {
+      const employee = await getEmployeeByEmpId(empId.trim().toUpperCase());
 
-    // Simulate validation delay
-    await new Promise(res => setTimeout(res, 800));
-    setValidating(false);
+      if (!employee) {
+        Alert.alert(t.notRegistered, t.notRegisteredMsg, [
+          { text: 'Register Now', onPress: () => navigation.navigate('Register', { lang }) },
+          { text: 'OK', style: 'cancel' },
+        ]);
+        setValidating(false);
+        return;
+      }
 
-    // Navigate to FaceScan with employee details
-    navigation.navigate('FaceScan', {
-      lang,
-      empId: empId.trim().toUpperCase(),
-      empName: empName.trim(),
-      department,
-    });
+      const registeredName = employee.empName.toLowerCase().trim();
+      const enteredName    = empName.trim().toLowerCase();
+
+      if (!registeredName.includes(enteredName) && !enteredName.includes(registeredName)) {
+        Alert.alert(t.nameMismatch, t.nameMismatchMsg);
+        setValidating(false);
+        return;
+      }
+
+      navigation.navigate('FaceScan', {
+        lang,
+        empId:          employee.empId,
+        empName:        employee.empName,
+        department:     employee.department,
+        storedEmbedding: employee.faceEmbedding,
+      });
+    } catch (err) {
+      Alert.alert('Error', 'Verification failed. Please try again.');
+    } finally {
+      setValidating(false);
+    }
   }
 
   return (
@@ -119,31 +131,29 @@ export default function LoginScreen({ navigation, route }: any) {
 
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backBtn}>←</Text>
+        <TouchableOpacity style={styles.headerBackBtn} onPress={() => navigation.goBack()} activeOpacity={0.7}>
+          <ArrowLeft size={20} color={WHITE} strokeWidth={2.5} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{t.title}</Text>
-        <View style={{ width: 24 }} />
+        <View style={{ width: 40 }} />
       </View>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}>
-        <ScrollView
-          contentContainerStyle={styles.scroll}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
 
           {/* Offline Badge */}
           <View style={styles.offlineBadge}>
             <View style={styles.greenDot} />
+            <Wifi size={13} color="#1a7a4a" strokeWidth={2.5} />
             <Text style={styles.offlineText}>{t.offline}</Text>
           </View>
 
           {/* Avatar */}
-          <View style={styles.avatarContainer}>
-            <View style={styles.avatar}>
-              <Text style={styles.avatarIcon}>👤</Text>
+          <View style={styles.avatarSection}>
+            <View style={styles.avatarRing}>
+              <View style={styles.avatar}>
+                <User size={38} color={NAVY} strokeWidth={1.5} />
+              </View>
             </View>
             <Text style={styles.subtitle}>{t.subtitle}</Text>
           </View>
@@ -152,56 +162,40 @@ export default function LoginScreen({ navigation, route }: any) {
           <View style={styles.formCard}>
 
             {/* Employee ID */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>{t.empIdLabel}</Text>
-              <TextInput
-                style={styles.input}
-                placeholder={t.empIdPlaceholder}
-                placeholderTextColor="#AAAAAA"
-                value={empId}
-                onChangeText={text => setEmpId(text.toUpperCase())}
-                autoCapitalize="characters"
-                maxLength={15}
-              />
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>{t.empIdLabel}</Text>
+              <View style={[styles.inputRow, focusedField === 'id' && styles.inputRowFocused]}>
+                <BadgeCheck size={18} color={focusedField === 'id' ? NAVY : MUTED} strokeWidth={2} style={{ marginRight: 10 }} />
+                <TextInput
+                  style={styles.inputText}
+                  placeholder={t.empIdPlaceholder}
+                  placeholderTextColor="#B0B8C8"
+                  value={empId}
+                  onChangeText={text => setEmpId(text.toUpperCase())}
+                  autoCapitalize="characters"
+                  maxLength={15}
+                  onFocus={() => setFocusedField('id')}
+                  onBlur={() => setFocusedField(null)}
+                />
+              </View>
             </View>
 
             {/* Full Name */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>{t.nameLabel}</Text>
-              <TextInput
-                style={styles.input}
-                placeholder={t.namePlaceholder}
-                placeholderTextColor="#AAAAAA"
-                value={empName}
-                onChangeText={setEmpName}
-                autoCapitalize="words"
-                maxLength={50}
-              />
-            </View>
-
-            {/* Department */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>{t.deptLabel}</Text>
-              <View style={styles.deptGrid}>
-                {DEPARTMENTS[lang].map((dept, i) => (
-                  <TouchableOpacity
-                    key={i}
-                    style={[
-                      styles.deptChip,
-                      selectedDept === i && styles.deptChipActive,
-                    ]}
-                    onPress={() => {
-                      setSelectedDept(i);
-                      setDepartment(DEPARTMENTS['en'][i]);
-                    }}>
-                    <Text style={[
-                      styles.deptChipText,
-                      selectedDept === i && styles.deptChipTextActive,
-                    ]}>
-                      {dept}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>{t.nameLabel}</Text>
+              <View style={[styles.inputRow, focusedField === 'name' && styles.inputRowFocused]}>
+                <User size={18} color={focusedField === 'name' ? NAVY : MUTED} strokeWidth={2} style={{ marginRight: 10 }} />
+                <TextInput
+                  style={styles.inputText}
+                  placeholder={t.namePlaceholder}
+                  placeholderTextColor="#B0B8C8"
+                  value={empName}
+                  onChangeText={setEmpName}
+                  autoCapitalize="words"
+                  maxLength={50}
+                  onFocus={() => setFocusedField('name')}
+                  onBlur={() => setFocusedField(null)}
+                />
               </View>
             </View>
 
@@ -209,23 +203,41 @@ export default function LoginScreen({ navigation, route }: any) {
 
           {/* Secure Note */}
           <View style={styles.secureNote}>
-            <Text style={styles.secureIcon}>🔐</Text>
+            <View style={styles.secureIconWrap}>
+              <ShieldCheck size={16} color={ORANGE} strokeWidth={2} />
+            </View>
             <Text style={styles.secureText}>{t.secureNote}</Text>
           </View>
 
           {/* Login Button */}
           <TouchableOpacity
-            style={[styles.loginBtn, validating && styles.loginBtnDisabled]}
+            style={[styles.primaryBtn, validating && styles.primaryBtnDisabled]}
             onPress={handleLogin}
-            disabled={validating}>
+            disabled={validating}
+            activeOpacity={0.85}
+          >
             {validating ? (
               <View style={styles.loadingRow}>
-                <ActivityIndicator color="#fff" size="small" />
-                <Text style={styles.loginBtnText}>{t.validating}</Text>
+                <ActivityIndicator color={WHITE} size="small" />
+                <Text style={styles.primaryBtnText}>{t.validating}</Text>
               </View>
             ) : (
-              <Text style={styles.loginBtnText}>{t.loginBtn} →</Text>
+              <>
+                <ScanFace size={20} color={WHITE} strokeWidth={2} style={{ marginRight: 10 }} />
+                <Text style={styles.primaryBtnText}>{t.loginBtn}</Text>
+                <ChevronRight size={18} color={WHITE} strokeWidth={2.5} style={{ marginLeft: 6 }} />
+              </>
             )}
+          </TouchableOpacity>
+
+          {/* Register Link */}
+          <TouchableOpacity
+            style={styles.registerLinkRow}
+            onPress={() => navigation.navigate('Register', { lang })}
+            activeOpacity={0.7}
+          >
+            <UserPlus size={15} color={NAVY} strokeWidth={2} style={{ marginRight: 6 }} />
+            <Text style={styles.registerLinkText}>{t.registerLink}</Text>
           </TouchableOpacity>
 
           <View style={{ height: 30 }} />
@@ -236,99 +248,146 @@ export default function LoginScreen({ navigation, route }: any) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F5F6FA' },
+  container: { flex: 1, backgroundColor: BG },
+
+  // Header
   header: {
-    backgroundColor: '#1A3C6E',
+    backgroundColor: NAVY,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
+    elevation: 4,
+    shadowColor: NAVY,
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
   },
-  backBtn: { color: '#fff', fontSize: 22 },
-  headerTitle: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  scroll: { padding: 20, gap: 16 },
+  headerBackBtn: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  headerTitle: { color: WHITE, fontSize: 17, fontWeight: '700', letterSpacing: 0.3 },
+
+  scroll: { padding: 20, gap: 18, paddingBottom: 40 },
+
+  // Offline badge
   offlineBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#E8F8F0',
+    backgroundColor: '#E6F9EF',
     paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 20,
-    alignSelf: 'center',
-  },
-  greenDot: { width: 8, height: 8, backgroundColor: '#2ECC71', borderRadius: 4 },
-  offlineText: { color: '#1a7a4a', fontSize: 12, fontWeight: '500' },
-  avatarContainer: { alignItems: 'center', gap: 8 },
-  avatar: {
-    width: 80,
-    height: 80,
-    backgroundColor: '#E8EDF5',
-    borderRadius: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#1A3C6E',
-  },
-  avatarIcon: { fontSize: 36 },
-  subtitle: { fontSize: 13, color: '#6E6E73', textAlign: 'center' },
-  formCard: {
-    backgroundColor: '#fff',
-    borderRadius: 16,
-    padding: 16,
-    gap: 16,
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
-  },
-  inputGroup: { gap: 6 },
-  inputLabel: { fontSize: 13, fontWeight: '500', color: '#1A3C6E' },
-  input: {
-    backgroundColor: '#F5F6FA',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-    color: '#1C1C1E',
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
-  },
-  deptGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  deptChip: {
-    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#F5F6FA',
-    borderWidth: 0.5,
-    borderColor: '#E0E0E0',
+    alignSelf: 'center',
+    borderWidth: 1,
+    borderColor: '#B6EDD0',
   },
-  deptChipActive: {
-    backgroundColor: '#1A3C6E',
-    borderColor: '#1A3C6E',
+  greenDot: { width: 7, height: 7, backgroundColor: GREEN, borderRadius: 4 },
+  offlineText: { color: '#1a7a4a', fontSize: 12, fontWeight: '600' },
+
+  // Avatar
+  avatarSection: { alignItems: 'center', gap: 12 },
+  avatarRing: {
+    width: 96, height: 96, borderRadius: 48,
+    backgroundColor: LIGHT_NAVY,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 2, borderColor: '#C8D9F0',
+    elevation: 3,
+    shadowColor: NAVY,
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
   },
-  deptChipText: { fontSize: 12, color: '#6E6E73', fontWeight: '500' },
-  deptChipTextActive: { color: '#fff' },
+  avatar: {
+    width: 76, height: 76, borderRadius: 38,
+    backgroundColor: WHITE,
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: BORDER,
+  },
+  subtitle: { fontSize: 13, color: MUTED, textAlign: 'center', lineHeight: 20 },
+
+  // Form card
+  formCard: {
+    backgroundColor: WHITE,
+    borderRadius: 18,
+    padding: 20,
+    gap: 18,
+    borderWidth: 1,
+    borderColor: BORDER,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+  },
+  fieldGroup: { gap: 8 },
+  fieldLabel: { fontSize: 13, fontWeight: '700', color: NAVY, marginLeft: 2 },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: BG,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderWidth: 1.5,
+    borderColor: BORDER,
+  },
+  inputRowFocused: { borderColor: NAVY, backgroundColor: LIGHT_NAVY },
+  inputText: { flex: 1, fontSize: 14, color: '#1C1C1E', fontWeight: '500' },
+
+  // Secure note
   secureNote: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#FFF8F0',
-    padding: 12,
-    borderRadius: 10,
+    gap: 10,
+    backgroundColor: LIGHT_ORANGE,
+    padding: 13,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: '#FFD5B0',
   },
-  secureIcon: { fontSize: 16 },
-  secureText: { fontSize: 11, color: '#854F0B', flex: 1 },
-  loginBtn: {
-    backgroundColor: '#1A3C6E',
-    borderRadius: 14,
+  secureIconWrap: {
+    width: 32, height: 32, borderRadius: 10,
+    backgroundColor: WHITE,
+    alignItems: 'center', justifyContent: 'center',
+    elevation: 1,
+  },
+  secureText: { fontSize: 12, color: '#854F0B', flex: 1, lineHeight: 18 },
+
+  // Primary button
+  primaryBtn: {
+    backgroundColor: NAVY,
+    borderRadius: 16,
     paddingVertical: 16,
+    paddingHorizontal: 24,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: NAVY,
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
   },
-  loginBtnDisabled: { backgroundColor: '#AAAAAA' },
-  loginBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  primaryBtnDisabled: { backgroundColor: '#B0B8C8', elevation: 0, shadowOpacity: 0 },
+  primaryBtnText: { color: WHITE, fontSize: 15, fontWeight: '700', letterSpacing: 0.3 },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+
+  // Register link
+  registerLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+  },
+  registerLinkText: {
+    color: NAVY,
+    fontSize: 13,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
 });
