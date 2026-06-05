@@ -284,12 +284,12 @@ If you're having issues getting the app to run, check the [React Native Troubles
 
 ## 📝 License
 
-This project was built for **Hackathon 2025** by **Team DRISHTI**.
+This project was built for **Hackathon 2026** by **Team DRISHTI**.
 
 ---
 
 <div align="center">
-
-*himanshu singh | mansi bhandari *
-
+Built with ❤️ for Bharat's remote workforce
+DRISHTI AI · Hackathon 2026
+Made by Mansi Bhandari & Himanshu Singh
 </div>
